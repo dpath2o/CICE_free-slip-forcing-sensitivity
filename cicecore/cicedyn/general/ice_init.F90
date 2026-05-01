@@ -94,17 +94,15 @@
       use ice_flux, only: default_season
       use ice_flux_bgc, only: cpl_bgc
       use ice_forcing, only: &
-          ycycle,          fyear_init,    debug_forcing, &
-          atm_data_type,   atm_data_dir,  precip_units, rotate_wind, &
-          atm_data_format, ocn_data_format, atm_data_version, &
-          bgc_data_type, &
-          ocn_data_type, ocn_data_dir, wave_spec_file,  &
-          hmix_0, &
-          oceanmixed_file, restore_ocn, trestore, &
-          ice_data_type, ice_data_conc, ice_data_dist, &
-          snw_filename, &
-          snw_tau_fname, snw_kappa_fname, snw_drdt0_fname, &
-          snw_rhos_fname, snw_Tgrd_fname, snw_T_fname
+           ycycle,          fyear_init,       debug_forcing,                                       &
+           atm_data_type,   atm_data_dir,     precip_units,     rotate_wind,                       &
+           atm_data_format, ocn_data_format,  atm_data_version,                                    &
+           bgc_data_type,   ocn_data_type,    ocn_data_dir,     wave_spec_file,                    &
+           tide_data_type,  tide_data_format, tide_data_file,   tide_use_currents, tide_use_ssh,   &
+           oceanmixed_file, restore_ocn,      trestore,         hmix_0,                            &
+           ice_data_type,   ice_data_conc,    ice_data_dist,                                       &
+           snw_filename,    snw_tau_fname,    snw_kappa_fname,  snw_drdt0_fname,   snw_rhos_fname, &
+           snw_Tgrd_fname,   snw_T_fname
       use ice_arrays_column, only: bgc_data_dir, fe_data_type
       use ice_grid, only: &
           grid_file, gridcpl_file, kmt_file, &
@@ -290,21 +288,23 @@
         snw_tau_fname,  snw_kappa_fname, snw_drdt0_fname
 
       namelist /forcing_nml/ &
-        formdrag,       atmbndy,         calc_strair,   calc_Tsfc,      &
-        highfreq,       natmiter,        atmiter_conv,  calc_dragio,    &
-        ustar_min,      emissivity,      iceruf,        iceruf_ocn,     &
-        fbot_xfer_type, update_ocn_f,    l_mpond_fresh, tfrz_option,    &
-        saltflux_option,ice_ref_salinity,cpl_frazil,    congel_freeze,  &
-        oceanmixed_ice, restore_ice,     restore_ocn,   trestore,       &
-        precip_units,   default_season,  wave_spec_type,nfreq,          &
-        atm_data_type,  ocn_data_type,   bgc_data_type, fe_data_type,   &
-        ice_data_type,  ice_data_conc,   ice_data_dist,                 &
-        fyear_init,     ycycle,          wave_spec_file,restart_coszen, &
-        atm_data_dir,   ocn_data_dir,    bgc_data_dir,                  &
-        atm_data_format, ocn_data_format, rotate_wind,                  &
-        oceanmixed_file, atm_data_version,semi_implicit_Tsfc,           &
-        vapor_flux_correction, &
-        hmix_0
+           formdrag,       atmbndy,         calc_strair,   calc_Tsfc,      &
+           highfreq,       natmiter,        atmiter_conv,  calc_dragio,    &
+           ustar_min,      emissivity,      iceruf,        iceruf_ocn,     &
+           fbot_xfer_type, update_ocn_f,    l_mpond_fresh, tfrz_option,    &
+           saltflux_option,ice_ref_salinity,cpl_frazil,    congel_freeze,  &
+           oceanmixed_ice, restore_ice,     restore_ocn,   trestore,       &
+           precip_units,   default_season,  wave_spec_type,nfreq,          &
+           tide_data_type, tide_data_format, tide_data_file,               &
+           tide_use_currents, tide_use_ssh,                                &
+           atm_data_type,  ocn_data_type,   bgc_data_type, fe_data_type,   &
+           ice_data_type,  ice_data_conc,   ice_data_dist,                 &
+           fyear_init,     ycycle,          wave_spec_file,restart_coszen, &
+           atm_data_dir,   ocn_data_dir,    bgc_data_dir,                  &
+           atm_data_format, ocn_data_format, rotate_wind,                  &
+           oceanmixed_file, atm_data_version,semi_implicit_Tsfc,           &
+           vapor_flux_correction, &
+           hmix_0
 
       !-----------------------------------------------------------------
       ! default values
@@ -591,6 +591,11 @@
       nfreq           = 25        ! number of wave frequencies
       wave_spec_file  = ' '       ! wave forcing file name
       ocn_data_format = 'bin'     ! file format ('bin'=binary or 'nc'=netcdf)
+      tide_data_type    = 'none'
+      tide_data_format  = 'none'
+      tide_data_file    = 'unknown_tide_file'
+      tide_use_currents = .false.
+      tide_use_ssh      = .false.
       bgc_data_type   = 'default'
       fe_data_type    = 'default'
       ice_data_type   = 'default' ! used by some tests to initialize ice state (overall type and mask)

@@ -43,16 +43,47 @@ module ice_forcing
   ! define subroutines that other modules will use
   implicit none
   private
+  ! public :: alloc_forcing, init_forcing_atmo, init_forcing_ocn, init_snowtable, &
+  !           get_forcing_atmo, get_forcing_ocn, get_wave_spec, &
+  !           read_clim_data, read_clim_data_nc, read_data_nc_point, &
+  !           interpolate_data, interp_coeff_monthly, interp_coeff
   public :: alloc_forcing, init_forcing_atmo, init_forcing_ocn, init_snowtable, &
-            get_forcing_atmo, get_forcing_ocn, get_wave_spec, &
-            read_clim_data, read_clim_data_nc, read_data_nc_point, &
-            interpolate_data, interp_coeff_monthly, interp_coeff
+       init_tides_metadata, alloc_tides_fields, init_tides_fields, &
+       get_forcing_atmo, get_forcing_ocn, get_wave_spec, &
+       read_clim_data, read_clim_data_nc, read_data_nc_point, &
+       interpolate_data, interp_coeff_monthly, interp_coeff
   ! create variable namespace and allocate types
   ! year information
   integer (kind=int_kind), public :: ycycle          , & ! number of years in forcing cycle, set by namelist
                                      fyear_init      , & ! first year of data in forcing cycle, set by namelist
                                      fyear           , & ! current year in forcing cycle, varying during the run
                                      fyear_final         ! last year in cycle, computed at init
+  ! TIDES
+  integer (kind=int_kind), public :: &
+       tide_nconst = 0, &
+       tide_nj = 0, &
+       tide_ni = 0
+  logical (kind=log_kind), public :: &
+       tide_metadata_loaded = .false.
+  real (kind=dbl_kind), dimension(:), allocatable, public :: &
+       tide_omega, &
+       tide_phase, &
+       tide_alpha, &
+       tide_amplitude
+  character(len=256), public :: &
+       tide_constituent_order = ''
+  logical (kind=log_kind), public :: &
+       tide_fields_loaded = .false.
+  real (kind=dbl_kind), dimension(:,:,:,:), allocatable, public :: &
+       tide_hRe, &
+       tide_hIm, &
+       tide_URe, &
+       tide_UIm, &
+       tide_VRe, &
+       tide_VIm
+  real (kind=dbl_kind), dimension(:,:,:), allocatable, public :: &
+       tide_wct, &
+       tide_mask
   ! input data file names
   character (char_len_long) :: F_uwind, &
                                F_vwind, &
@@ -103,19 +134,22 @@ module ice_forcing
   ! 4-d (categorical) field values at 2 temporal data points
   real (kind=dbl_kind), dimension(:,:,:,:,:), allocatable, public :: topmelt_data, botmelt_data
   ! data formats and types
-  character(char_len), public :: atm_data_format, & ! 'bin'=binary or 'nc'=netcdf
-                                 ocn_data_format, & ! 'bin'=binary or 'nc'=netcdf
-                                 atm_data_type,   & ! 'default', 'monthly', 'ncar', 'box2001', 'hadgem', 'oned', 'calm', 'uniform', 'ERA5', 'JRA55_***'
-                                 atm_data_version, & ! date of atm_forcing file creation
-                                 bgc_data_type,   & ! 'default', 'clim'
-                                 ocn_data_type,   & ! 'default', 'clim', 'ncar', 'oned', 'calm', 'box2001', 'hadgem_sst' or 'hadgem_sst_uvocn', 'uniform', 'AFIM'
-                                 era5_mod_var,    & ! <--------- ONLY VALID IN ERA5_data --------->
-                                                    ! 'u','v','wspd','tair','qair','sw','lw'
-                                                    ! DEFAULT: ''; blank string, which means no modification
-                                 ice_data_type,   & ! 'latsst', 'box2001', 'boxslotcyl', etc
-                                 ice_data_conc,   & ! 'p5','p8','p9','c1','parabolic', 'box2001', etc
-                                 ice_data_dist,   & ! 'box2001','gauss', 'uniform', etc
-                                 precip_units       ! 'mm_per_month', 'mm_per_sec', 'mks','m_per_sec'
+  character(char_len), public :: &
+       atm_data_format,  & ! 'bin'=binary or 'nc'=netcdf
+       ocn_data_format,  & ! 'bin'=binary or 'nc'=netcdf
+       atm_data_type,    & ! 'default', 'monthly', 'ncar', 'box2001', 'hadgem', 'oned', 'calm', 'uniform', 'ERA5', 'JRA55_***'
+       atm_data_version, & ! date of atm_forcing file creation
+       bgc_data_type,    & ! 'default', 'clim'
+       ocn_data_type,    & ! 'default', 'clim', 'ncar', 'oned', 'calm', 'box2001', 'hadgem_sst' or 'hadgem_sst_uvocn', 'uniform', 'AFIM'
+       era5_mod_var,     & ! <--------- ONLY VALID IN ERA5_data --------->
+                           !    'u','v','wspd','tair','qair','sw','lw'
+                           !    DEFAULT: ''; blank string, which means no modification
+       tide_data_type,   & ! 'none' or 'harmonic'
+       tide_data_format, & ! 'none' or 'CICE_TMD3'
+       ice_data_type,    & ! 'latsst', 'box2001', 'boxslotcyl', etc
+       ice_data_conc,    & ! 'p5','p8','p9','c1','parabolic', 'box2001', etc
+       ice_data_dist,    & ! 'box2001','gauss', 'uniform', etc
+       precip_units        ! 'mm_per_month', 'mm_per_sec', 'mks','m_per_sec'
   ! modified atmospheric forcing field scale factor
   real (kind=dbl_kind), public :: era5_mod_fac ! <--------- ONLY VALID IN ERA5_data --------->
                                                ! a multiplicative for scaling atmospheric data
@@ -123,11 +157,13 @@ module ice_forcing
   ! rotate wind/stress to computational grid from true north directed
   logical (kind=log_kind), public :: rotate_wind
   ! directory information
-  character(char_len_long), public :: atm_data_dir , & ! top directory for atmospheric data
-                                      ocn_data_dir , & ! top directory for ocean data
-                                      wave_spec_dir, & ! dir name for wave spectrum
-                                      wave_spec_file,& ! file name for wave spectrum
-                                      oceanmixed_file  ! file name for ocean forcing data
+  character(char_len_long), public :: &
+       atm_data_dir,    & ! top directory for atmospheric data
+       ocn_data_dir,    & ! top directory for ocean data
+       wave_spec_dir,   & ! dir name for wave spectrum
+       wave_spec_file,  & ! file name for wave spectrum
+       oceanmixed_file, & ! file name for ocean forcing data
+       tide_data_file     ! harmonic tide file on CICE T-grid
   ! number of fields to search for in forcing file
   integer (kind=int_kind), parameter :: nfld = 8, ndfld = 4
  ! number of months and days in year for ocean forcing
@@ -147,6 +183,10 @@ module ice_forcing
   real(kind=dbl_kind), public :: hmix_0  ! initial (or fixed if standalone) mixed layer depth
   ! restoring time scale (sec)
   real (kind=dbl_kind), public :: trest
+  ! tidal switches
+  logical(kind=log_kind), public :: &
+       tide_use_currents, & ! apply tidal u/v from harmonics
+       tide_use_ssh         ! apply tidal eta -> ss_tltx/ss_tlty
   ! prints forcing debugging output if true
   logical (kind=log_kind), public :: debug_forcing
   ! jday time vector from atm forcing files
@@ -483,6 +523,12 @@ contains
              enddo
           enddo
        enddo
+       ! TIDES
+       if (trim(tide_data_type) == 'harmonic') then
+          call init_tides_metadata
+          call alloc_tides_fields
+          call init_tides_fields
+       endif
        ! Compute freezing temperature from SSS
        call ocn_freezing_temperature
        ! Initialize SST to Tf (freezing point) for ALL points
@@ -513,6 +559,390 @@ contains
        call abort_ice (error_message=subname//' ERROR ocn_data_type unknown = '// trim(ocn_data_type), file=__FILE__, line=__LINE__)
     endif
   end subroutine init_forcing_ocn
+
+  !=======================================================================
+  subroutine init_tides_metadata
+
+#ifdef USE_NETCDF
+    use netcdf, only: nf90_noerr, nf90_global, nf90_inq_dimid, nf90_inquire_dimension, &
+                      nf90_inq_varid, nf90_get_var, nf90_get_att, nf90_strerror
+#endif
+
+    integer (kind=int_kind) :: ncid
+    integer (kind=int_kind) :: dimid
+    integer (kind=int_kind) :: varid
+    integer (kind=int_kind) :: ierr
+    character(len=*), parameter :: subname = '(init_tides_metadata)'
+
+    if (trim(tide_data_type) /= 'harmonic') return
+    if (tide_metadata_loaded) return
+
+#ifndef USE_NETCDF
+    call abort_ice(error_message=subname//' ERROR tide metadata requires USE_NETCDF', &
+         file=__FILE__, line=__LINE__)
+#else
+
+    if (trim(tide_data_format) /= 'CICE_TMD3') then
+       call abort_ice(error_message=subname//' ERROR unsupported tide_data_format = '//trim(tide_data_format), &
+            file=__FILE__, line=__LINE__)
+    endif
+
+    if (trim(tide_data_file) == 'unknown_tide_file') then
+       call abort_ice(error_message=subname//' ERROR tide_data_file not set', &
+            file=__FILE__, line=__LINE__)
+    endif
+
+    call ice_open_nc(trim(tide_data_file), ncid)
+
+    ierr = nf90_inq_dimid(ncid, 'constituents', dimid)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR missing dim constituents: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+    ierr = nf90_inquire_dimension(ncid, dimid, len=tide_nconst)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR reading dim constituents: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+
+    ierr = nf90_inq_dimid(ncid, 'nj', dimid)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR missing dim nj: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+    ierr = nf90_inquire_dimension(ncid, dimid, len=tide_nj)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR reading dim nj: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+
+    ierr = nf90_inq_dimid(ncid, 'ni', dimid)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR missing dim ni: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+    ierr = nf90_inquire_dimension(ncid, dimid, len=tide_ni)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR reading dim ni: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+
+    if (tide_nj /= ny_global .or. tide_ni /= nx_global) then
+       if (my_task == master_task) then
+          write(nu_diag,*) subname//' ERROR tide file dims do not match CICE grid'
+          write(nu_diag,*) subname//' tide_nj, tide_ni = ', tide_nj, tide_ni
+          write(nu_diag,*) subname//' ny_global, nx_global = ', ny_global, nx_global
+       endif
+       call abort_ice(error_message=subname//' tide grid mismatch', &
+            file=__FILE__, line=__LINE__)
+    endif
+
+    if (allocated(tide_omega))     deallocate(tide_omega)
+    if (allocated(tide_phase))     deallocate(tide_phase)
+    if (allocated(tide_alpha))     deallocate(tide_alpha)
+    if (allocated(tide_amplitude)) deallocate(tide_amplitude)
+
+    allocate(tide_omega(tide_nconst))
+    allocate(tide_phase(tide_nconst))
+    allocate(tide_alpha(tide_nconst))
+    allocate(tide_amplitude(tide_nconst))
+
+    ierr = nf90_inq_varid(ncid, 'omega', varid)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR missing var omega: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+    ierr = nf90_get_var(ncid, varid, tide_omega)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR reading omega: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+
+    ierr = nf90_inq_varid(ncid, 'phase', varid)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR missing var phase: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+    ierr = nf90_get_var(ncid, varid, tide_phase)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR reading phase: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+
+    ierr = nf90_inq_varid(ncid, 'alpha', varid)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR missing var alpha: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+    ierr = nf90_get_var(ncid, varid, tide_alpha)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR reading alpha: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+
+    ierr = nf90_inq_varid(ncid, 'amplitude', varid)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR missing var amplitude: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+    ierr = nf90_get_var(ncid, varid, tide_amplitude)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR reading amplitude: '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+
+    tide_constituent_order = ''
+    ierr = nf90_get_att(ncid, nf90_global, 'constituent_order', tide_constituent_order)
+    if (ierr /= nf90_noerr) then
+       tide_constituent_order = 'unknown'
+    endif
+
+    call ice_close_nc(ncid)
+
+    tide_metadata_loaded = .true.
+
+    if (my_task == master_task) then
+       write(nu_diag,*) subname//' loaded tide metadata from: ', trim(tide_data_file)
+       write(nu_diag,*) subname//' tide_nconst = ', tide_nconst
+       write(nu_diag,*) subname//' tide grid   = ', tide_nj, tide_ni
+       write(nu_diag,*) subname//' constituent_order = ', trim(tide_constituent_order)
+       write(nu_diag,*) subname//' omega(1) = ', tide_omega(1)
+       write(nu_diag,*) subname//' phase(1) = ', tide_phase(1)
+       write(nu_diag,*) subname//' alpha(1) = ', tide_alpha(1)
+       write(nu_diag,*) subname//' amplitude(1) = ', tide_amplitude(1)
+    endif
+
+#endif
+
+  end subroutine init_tides_metadata
+
+  !=======================================================================
+  subroutine alloc_tides_fields
+
+    integer (kind=int_kind) :: ierr
+    character(len=*), parameter :: subname = '(alloc_tides_fields)'
+
+    if (trim(tide_data_type) /= 'harmonic') return
+    if (.not. tide_metadata_loaded) then
+       call abort_ice(error_message=subname//' ERROR tide metadata not loaded', &
+            file=__FILE__, line=__LINE__)
+    endif
+    if (tide_fields_loaded) return
+
+    if (.not. allocated(tide_hRe)) then
+       allocate( tide_hRe(nx_block,ny_block,max_blocks,tide_nconst), &
+                 tide_hIm(nx_block,ny_block,max_blocks,tide_nconst), &
+                 tide_URe(nx_block,ny_block,max_blocks,tide_nconst), &
+                 tide_UIm(nx_block,ny_block,max_blocks,tide_nconst), &
+                 tide_VRe(nx_block,ny_block,max_blocks,tide_nconst), &
+                 tide_VIm(nx_block,ny_block,max_blocks,tide_nconst), &
+                 tide_wct(nx_block,ny_block,max_blocks), &
+                 tide_mask(nx_block,ny_block,max_blocks), &
+                 stat=ierr )
+       if (ierr /= 0) then
+          call abort_ice(error_message=subname//' ERROR allocating tide fields', &
+               file=__FILE__, line=__LINE__)
+       endif
+    endif
+
+    tide_hRe  = c0
+    tide_hIm  = c0
+    tide_URe  = c0
+    tide_UIm  = c0
+    tide_VRe  = c0
+    tide_VIm  = c0
+    tide_wct  = c0
+    tide_mask = c0
+
+  end subroutine alloc_tides_fields
+
+  !=======================================================================
+!=======================================================================
+subroutine init_tides_fields
+
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use ice_gather_scatter, only: scatter_global
+  use ice_domain, only: distrb_info
+#ifdef USE_NETCDF
+  use netcdf, only: nf90_noerr, nf90_inq_varid, nf90_get_var, nf90_strerror
+#endif
+
+  integer (kind=int_kind) :: fid
+  character(len=*), parameter :: subname = '(init_tides_fields)'
+
+  if (trim(tide_data_type) /= 'harmonic') return
+
+  if (.not. tide_metadata_loaded) then
+     call abort_ice(error_message=subname//' ERROR tide metadata not loaded', &
+          file=__FILE__, line=__LINE__)
+  endif
+
+  if (.not. allocated(tide_hRe)) then
+     call abort_ice(error_message=subname//' ERROR tide fields not allocated', &
+          file=__FILE__, line=__LINE__)
+  endif
+
+  if (tide_fields_loaded) return
+
+#ifndef USE_NETCDF
+  call abort_ice(error_message=subname//' ERROR direct tide reads require USE_NETCDF', &
+       file=__FILE__, line=__LINE__)
+#else
+
+  call ice_open_nc(trim(tide_data_file), fid)
+
+  !---------------------------------------------------------------------
+  ! Static 2D fields from prototype file: (nj,ni)
+  !---------------------------------------------------------------------
+  call read_static_2d(fid, 'wct',       tide_wct)
+  call read_static_2d(fid, 'cats_mask', tide_mask)
+
+  !---------------------------------------------------------------------
+  ! Harmonic 3D fields from prototype file: (constituents,nj,ni)
+  !---------------------------------------------------------------------
+  call read_harmonic_3d(fid, 'hRe', tide_hRe)
+  call read_harmonic_3d(fid, 'hIm', tide_hIm)
+  call read_harmonic_3d(fid, 'URe', tide_URe)
+  call read_harmonic_3d(fid, 'UIm', tide_UIm)
+  call read_harmonic_3d(fid, 'VRe', tide_VRe)
+  call read_harmonic_3d(fid, 'VIm', tide_VIm)
+
+  call ice_close_nc(fid)
+
+  tide_fields_loaded = .true.
+
+  if (my_task == master_task) then
+     write(nu_diag,*) subname//' loaded tide coefficient fields from: ', trim(tide_data_file)
+     write(nu_diag,*) subname//' master raw/scattered diagnostics complete'
+     write(nu_diag,*) subname//' tide_wct  local-block min/max = ', minval(tide_wct),  maxval(tide_wct)
+     write(nu_diag,*) subname//' tide_mask local-block min/max = ', minval(tide_mask), maxval(tide_mask)
+     write(nu_diag,*) subname//' tide_hRe(1) local-block min/max = ', minval(tide_hRe(:,:,:,1)), maxval(tide_hRe(:,:,:,1))
+     write(nu_diag,*) subname//' tide_URe(1) local-block min/max = ', minval(tide_URe(:,:,:,1)), maxval(tide_URe(:,:,:,1))
+     write(nu_diag,*) subname//' tide_VRe(1) local-block min/max = ', minval(tide_VRe(:,:,:,1)), maxval(tide_VRe(:,:,:,1))
+  endif
+
+#endif
+
+contains
+
+  !---------------------------------------------------------------------
+  subroutine sanitize2d(a)
+    real (kind=dbl_kind), intent(inout) :: a(:,:)
+    where (.not. ieee_is_finite(a)) a = c0
+  end subroutine sanitize2d
+
+  !---------------------------------------------------------------------
+  subroutine sanitize3d(a)
+    real (kind=dbl_kind), intent(inout) :: a(:,:,:)
+    where (.not. ieee_is_finite(a)) a = c0
+  end subroutine sanitize3d
+
+  !---------------------------------------------------------------------
+  subroutine read_static_2d(fid, varname, dest)
+
+    integer (kind=int_kind), intent(in) :: fid
+    character(len=*), intent(in) :: varname
+    real (kind=dbl_kind), dimension(nx_block,ny_block,max_blocks), intent(out) :: dest
+
+    integer (kind=int_kind) :: ierr, varid
+    real (kind=dbl_kind), allocatable :: file2d(:,:)   ! file order: (nj,ni)
+    real (kind=dbl_kind), allocatable :: g2(:,:)       ! CICE global order: (nx,ny)
+
+    if (my_task == master_task) then
+       allocate(file2d(tide_nj,tide_ni))
+       allocate(g2(nx_global,ny_global))
+    else
+       allocate(file2d(1,1))
+       allocate(g2(1,1))
+    endif
+
+    file2d = c0
+    g2     = c0
+
+    ierr = nf90_inq_varid(fid, trim(varname), varid)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR missing var '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+
+    if (my_task == master_task) then
+       ierr = nf90_get_var(fid, varid, file2d)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR reading '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+
+       call sanitize2d(file2d)
+
+       ! file2d is (nj,ni); CICE scatter_global expects (nx_global,ny_global)
+       g2 = transpose(file2d)
+
+       write(nu_diag,*) subname//' raw ', trim(varname), ' min/max = ', minval(g2), maxval(g2)
+    endif
+
+    call scatter_global(dest, g2, master_task, distrb_info, &
+         field_loc_center, field_type_scalar)
+
+    deallocate(file2d, g2)
+
+  end subroutine read_static_2d
+
+  !---------------------------------------------------------------------
+  subroutine read_harmonic_3d(fid, varname, dest)
+
+    integer (kind=int_kind), intent(in) :: fid
+    character(len=*), intent(in) :: varname
+    real (kind=dbl_kind), dimension(nx_block,ny_block,max_blocks,tide_nconst), intent(out) :: dest
+
+    integer (kind=int_kind) :: ierr, varid, n
+    real (kind=dbl_kind), allocatable :: file3d(:,:,:) ! file order: (constituents,nj,ni)
+    real (kind=dbl_kind), allocatable :: g2(:,:)       ! CICE global order: (nx,ny)
+
+    if (my_task == master_task) then
+       allocate(file3d(tide_nconst,tide_nj,tide_ni))
+       allocate(g2(nx_global,ny_global))
+    else
+       allocate(file3d(1,1,1))
+       allocate(g2(1,1))
+    endif
+
+    file3d = c0
+    g2     = c0
+
+    ierr = nf90_inq_varid(fid, trim(varname), varid)
+    if (ierr /= nf90_noerr) then
+       call abort_ice(error_message=subname//' ERROR missing var '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
+            file=__FILE__, line=__LINE__)
+    endif
+
+    if (my_task == master_task) then
+       ierr = nf90_get_var(fid, varid, file3d)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR reading '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+
+       call sanitize3d(file3d)
+
+       g2 = transpose(file3d(1,:,:))
+       write(nu_diag,*) subname//' raw ', trim(varname), '(1) min/max = ', minval(g2), maxval(g2)
+    endif
+
+    do n = 1, tide_nconst
+       if (my_task == master_task) then
+          g2 = transpose(file3d(n,:,:))
+       endif
+
+       call scatter_global(dest(:,:,:,n), g2, master_task, distrb_info, &
+            field_loc_center, field_type_scalar)
+    enddo
+
+    deallocate(file3d, g2)
+
+  end subroutine read_harmonic_3d
+
+end subroutine init_tides_fields
+!=======================================================================
 
   !=======================================================================
   subroutine ocn_freezing_temperature
