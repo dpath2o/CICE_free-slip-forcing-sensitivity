@@ -167,3 +167,19 @@ Fri May  1 07:06:37 AEST 2026 ./cice.build:free-slip-tides build completed cice.
 Fri May  1 07:07:02 AEST 2026 ./cice.submit: free-slip job submitted
 Fri May  1 07:17:04 AEST 2026 ./cice.submit: free-slip job submitted
 Fri May  1 10:08:16 AEST 2026 ./cice.submit: free-slip job submitted
+Sun May  3 07:39:22 AEST 2026 ./cice.submit: free-slip job submitted
+Mon May  4 15:08:06 AEST 2026 ./cice.submit: free-slip job submitted
+Mon May  4 15:09:04 AEST 2026 ./cice.submit: free-slip job submitted
+Wed May  6 03:51:28 AEST 2026 ./cice.submit: free-slip job submitted
+Wed May  6 03:52:33 AEST 2026 /local/spool/pbs/mom_priv/jobs/167729312.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-tides/free-slip-tides/logs/cice.runlog.260506-035219
+Wed May  6 03:52:34 AEST 2026 /local/spool/pbs/mom_priv/jobs/167729312.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-tides/free-slip-tides/logs/ice_diag.d
+Wed May  6 03:52:34 AEST 2026 /local/spool/pbs/mom_priv/jobs/167729312.gadi-pbs.SC: CICE run did NOT complete
+Wed May  6 04:01:36 AEST 2026 ./cice.submit: free-slip job submitted
+Wed May  6 04:02:33 AEST 2026 /local/spool/pbs/mom_priv/jobs/167729337.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-tides/free-slip-tides/logs/cice.runlog.260506-040220
+Wed May  6 04:02:33 AEST 2026 /local/spool/pbs/mom_priv/jobs/167729337.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-tides/free-slip-tides/logs/ice_diag.d
+Wed May  6 04:02:33 AEST 2026 /local/spool/pbs/mom_priv/jobs/167729337.gadi-pbs.SC: CICE run did NOT complete
+Wed May  6 08:10:31 AEST 2026 ./cice.build:free-slip-tides build completed cice.bldlog.260506-081003
+Wed May  6 08:17:25 AEST 2026 ./cice.submit: free-slip job submitted
+Wed May  6 08:18:45 AEST 2026 /local/spool/pbs/mom_priv/jobs/167733057.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-tides/free-slip-tides/logs/cice.runlog.260506-081829
+Wed May  6 08:18:45 AEST 2026 /local/spool/pbs/mom_priv/jobs/167733057.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-tides/free-slip-tides/logs/ice_diag.d
+Wed May  6 08:18:45 AEST 2026 /local/spool/pbs/mom_priv/jobs/167733057.gadi-pbs.SC: CICE run did NOT complete

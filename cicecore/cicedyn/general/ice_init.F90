@@ -1060,6 +1060,7 @@
       call broadcast_scalar(F2_test_val,          master_task)
       call broadcast_scalar(kitd,                 master_task)
       call broadcast_scalar(kcatbound,            master_task)
+      !lateral drag
       call broadcast_scalar(boundary_condition,   master_task)
       call broadcast_scalar(form_func,            master_task)
       call broadcast_scalar(lateral_drag,         master_task)
@@ -1072,6 +1073,12 @@
       call broadcast_scalar(blend_exp,            master_task)
       call broadcast_scalar(u_sat,                master_task)
       call broadcast_scalar(eps_blend,            master_task)
+      !tides
+      call broadcast_scalar(tide_data_type,       master_task)
+      call broadcast_scalar(tide_data_format,     master_task)
+      call broadcast_scalar(tide_data_file,       master_task)
+      call broadcast_scalar(tide_use_currents,    master_task)
+      call broadcast_scalar(tide_use_ssh,         master_task)
       call broadcast_scalar(kdyn,                 master_task)
       call broadcast_scalar(ndtd,                 master_task)
       call broadcast_scalar(ndte,                 master_task)

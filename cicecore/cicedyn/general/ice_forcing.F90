@@ -789,6 +789,11 @@ subroutine init_tides_fields
        file=__FILE__, line=__LINE__)
 #else
 
+  if (my_task == master_task) then
+     write(nu_diag,*) subname//' len_trim(tide_data_file) = ', len_trim(tide_data_file)
+     write(nu_diag,*) subname//' tide_data_file = ', trim(tide_data_file)
+  endif
+
   call ice_open_nc(trim(tide_data_file), fid)
 
   !---------------------------------------------------------------------
