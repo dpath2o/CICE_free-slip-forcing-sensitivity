@@ -561,160 +561,197 @@ contains
   end subroutine init_forcing_ocn
 
   !=======================================================================
-  subroutine init_tides_metadata
+!=======================================================================
+subroutine init_tides_metadata
 
 #ifdef USE_NETCDF
-    use netcdf, only: nf90_noerr, nf90_global, nf90_inq_dimid, nf90_inquire_dimension, &
-                      nf90_inq_varid, nf90_get_var, nf90_get_att, nf90_strerror
+  use netcdf, only: nf90_noerr, nf90_global, nf90_inq_dimid, nf90_inquire_dimension, &
+                    nf90_inq_varid, nf90_get_var, nf90_get_att, nf90_strerror
 #endif
+  use ice_broadcast, only: broadcast_scalar
 
-    integer (kind=int_kind) :: ncid
-    integer (kind=int_kind) :: dimid
-    integer (kind=int_kind) :: varid
-    integer (kind=int_kind) :: ierr
-    character(len=*), parameter :: subname = '(init_tides_metadata)'
+  integer (kind=int_kind) :: ncid
+  integer (kind=int_kind) :: dimid
+  integer (kind=int_kind) :: varid
+  integer (kind=int_kind) :: ierr
+  integer (kind=int_kind) :: n
+  character(len=*), parameter :: subname = '(init_tides_metadata)'
 
-    if (trim(tide_data_type) /= 'harmonic') return
-    if (tide_metadata_loaded) return
+  if (trim(tide_data_type) /= 'harmonic') return
+  if (tide_metadata_loaded) return
 
 #ifndef USE_NETCDF
-    call abort_ice(error_message=subname//' ERROR tide metadata requires USE_NETCDF', &
-         file=__FILE__, line=__LINE__)
+  call abort_ice(error_message=subname//' ERROR tide metadata requires USE_NETCDF', &
+       file=__FILE__, line=__LINE__)
 #else
 
-    if (trim(tide_data_format) /= 'CICE_TMD3') then
-       call abort_ice(error_message=subname//' ERROR unsupported tide_data_format = '//trim(tide_data_format), &
-            file=__FILE__, line=__LINE__)
-    endif
+  if (trim(tide_data_format) /= 'CICE_TMD3') then
+     call abort_ice(error_message=subname//' ERROR unsupported tide_data_format = '//trim(tide_data_format), &
+          file=__FILE__, line=__LINE__)
+  endif
 
-    if (trim(tide_data_file) == 'unknown_tide_file') then
-       call abort_ice(error_message=subname//' ERROR tide_data_file not set', &
-            file=__FILE__, line=__LINE__)
-    endif
+  if (trim(tide_data_file) == 'unknown_tide_file') then
+     call abort_ice(error_message=subname//' ERROR tide_data_file not set', &
+          file=__FILE__, line=__LINE__)
+  endif
 
-    call ice_open_nc(trim(tide_data_file), ncid)
+  ! defaults on all ranks
+  tide_nconst = 0
+  tide_nj     = 0
+  tide_ni     = 0
+  tide_constituent_order = 'unknown'
 
-    ierr = nf90_inq_dimid(ncid, 'constituents', dimid)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR missing dim constituents: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
-    ierr = nf90_inquire_dimension(ncid, dimid, len=tide_nconst)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR reading dim constituents: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
+  if (my_task == master_task) then
 
-    ierr = nf90_inq_dimid(ncid, 'nj', dimid)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR missing dim nj: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
-    ierr = nf90_inquire_dimension(ncid, dimid, len=tide_nj)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR reading dim nj: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
+     write(nu_diag,*) subname//' pre-open len(tide_data_file)      = ', len(tide_data_file)
+     write(nu_diag,*) subname//' pre-open len_trim(tide_data_file) = ', len_trim(tide_data_file)
+     write(nu_diag,*) subname//' pre-open raw tide_data_file       = >', tide_data_file, '<'
+     write(nu_diag,*) subname//' pre-open trim(tide_data_file)     = >', trim(tide_data_file), '<'
 
-    ierr = nf90_inq_dimid(ncid, 'ni', dimid)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR missing dim ni: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
-    ierr = nf90_inquire_dimension(ncid, dimid, len=tide_ni)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR reading dim ni: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
+     call ice_open_nc(trim(tide_data_file), ncid)
 
-    if (tide_nj /= ny_global .or. tide_ni /= nx_global) then
-       if (my_task == master_task) then
-          write(nu_diag,*) subname//' ERROR tide file dims do not match CICE grid'
-          write(nu_diag,*) subname//' tide_nj, tide_ni = ', tide_nj, tide_ni
-          write(nu_diag,*) subname//' ny_global, nx_global = ', ny_global, nx_global
-       endif
-       call abort_ice(error_message=subname//' tide grid mismatch', &
-            file=__FILE__, line=__LINE__)
-    endif
+     ierr = nf90_inq_dimid(ncid, 'constituents', dimid)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR missing dim constituents: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
+     ierr = nf90_inquire_dimension(ncid, dimid, len=tide_nconst)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR reading dim constituents: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
 
-    if (allocated(tide_omega))     deallocate(tide_omega)
-    if (allocated(tide_phase))     deallocate(tide_phase)
-    if (allocated(tide_alpha))     deallocate(tide_alpha)
-    if (allocated(tide_amplitude)) deallocate(tide_amplitude)
+     ierr = nf90_inq_dimid(ncid, 'nj', dimid)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR missing dim nj: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
+     ierr = nf90_inquire_dimension(ncid, dimid, len=tide_nj)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR reading dim nj: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
 
-    allocate(tide_omega(tide_nconst))
-    allocate(tide_phase(tide_nconst))
-    allocate(tide_alpha(tide_nconst))
-    allocate(tide_amplitude(tide_nconst))
+     ierr = nf90_inq_dimid(ncid, 'ni', dimid)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR missing dim ni: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
+     ierr = nf90_inquire_dimension(ncid, dimid, len=tide_ni)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR reading dim ni: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
 
-    ierr = nf90_inq_varid(ncid, 'omega', varid)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR missing var omega: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
-    ierr = nf90_get_var(ncid, varid, tide_omega)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR reading omega: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
+  endif
 
-    ierr = nf90_inq_varid(ncid, 'phase', varid)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR missing var phase: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
-    ierr = nf90_get_var(ncid, varid, tide_phase)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR reading phase: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
+  call broadcast_scalar(tide_nconst, master_task)
+  call broadcast_scalar(tide_nj,     master_task)
+  call broadcast_scalar(tide_ni,     master_task)
 
-    ierr = nf90_inq_varid(ncid, 'alpha', varid)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR missing var alpha: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
-    ierr = nf90_get_var(ncid, varid, tide_alpha)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR reading alpha: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
+  if (tide_nj /= ny_global .or. tide_ni /= nx_global) then
+     if (my_task == master_task) then
+        write(nu_diag,*) subname//' ERROR tide file dims do not match CICE grid'
+        write(nu_diag,*) subname//' tide_nj, tide_ni = ', tide_nj, tide_ni
+        write(nu_diag,*) subname//' ny_global, nx_global = ', ny_global, nx_global
+     endif
+     call abort_ice(error_message=subname//' tide grid mismatch', &
+          file=__FILE__, line=__LINE__)
+  endif
 
-    ierr = nf90_inq_varid(ncid, 'amplitude', varid)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR missing var amplitude: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
-    ierr = nf90_get_var(ncid, varid, tide_amplitude)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR reading amplitude: '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
+  if (allocated(tide_omega))     deallocate(tide_omega)
+  if (allocated(tide_phase))     deallocate(tide_phase)
+  if (allocated(tide_alpha))     deallocate(tide_alpha)
+  if (allocated(tide_amplitude)) deallocate(tide_amplitude)
 
-    tide_constituent_order = ''
-    ierr = nf90_get_att(ncid, nf90_global, 'constituent_order', tide_constituent_order)
-    if (ierr /= nf90_noerr) then
-       tide_constituent_order = 'unknown'
-    endif
+  allocate(tide_omega(tide_nconst))
+  allocate(tide_phase(tide_nconst))
+  allocate(tide_alpha(tide_nconst))
+  allocate(tide_amplitude(tide_nconst))
 
-    call ice_close_nc(ncid)
+  tide_omega     = c0
+  tide_phase     = c0
+  tide_alpha     = c0
+  tide_amplitude = c0
 
-    tide_metadata_loaded = .true.
+  if (my_task == master_task) then
 
-    if (my_task == master_task) then
-       write(nu_diag,*) subname//' loaded tide metadata from: ', trim(tide_data_file)
-       write(nu_diag,*) subname//' tide_nconst = ', tide_nconst
-       write(nu_diag,*) subname//' tide grid   = ', tide_nj, tide_ni
-       write(nu_diag,*) subname//' constituent_order = ', trim(tide_constituent_order)
-       write(nu_diag,*) subname//' omega(1) = ', tide_omega(1)
-       write(nu_diag,*) subname//' phase(1) = ', tide_phase(1)
-       write(nu_diag,*) subname//' alpha(1) = ', tide_alpha(1)
-       write(nu_diag,*) subname//' amplitude(1) = ', tide_amplitude(1)
-    endif
+     ierr = nf90_inq_varid(ncid, 'omega', varid)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR missing var omega: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
+     ierr = nf90_get_var(ncid, varid, tide_omega)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR reading omega: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
+
+     ierr = nf90_inq_varid(ncid, 'phase', varid)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR missing var phase: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
+     ierr = nf90_get_var(ncid, varid, tide_phase)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR reading phase: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
+
+     ierr = nf90_inq_varid(ncid, 'alpha', varid)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR missing var alpha: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
+     ierr = nf90_get_var(ncid, varid, tide_alpha)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR reading alpha: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
+
+     ierr = nf90_inq_varid(ncid, 'amplitude', varid)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR missing var amplitude: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
+     ierr = nf90_get_var(ncid, varid, tide_amplitude)
+     if (ierr /= nf90_noerr) then
+        call abort_ice(error_message=subname//' ERROR reading amplitude: '//trim(nf90_strerror(ierr)), &
+             file=__FILE__, line=__LINE__)
+     endif
+
+     ierr = nf90_get_att(ncid, nf90_global, 'constituent_order', tide_constituent_order)
+     if (ierr /= nf90_noerr) tide_constituent_order = 'unknown'
+
+     call ice_close_nc(ncid)
+
+  endif
+
+  do n = 1, tide_nconst
+     call broadcast_scalar(tide_omega(n),     master_task)
+     call broadcast_scalar(tide_phase(n),     master_task)
+     call broadcast_scalar(tide_alpha(n),     master_task)
+     call broadcast_scalar(tide_amplitude(n), master_task)
+  enddo
+  call broadcast_scalar(tide_constituent_order, master_task)
+
+  tide_metadata_loaded = .true.
+
+  if (my_task == master_task) then
+     write(nu_diag,*) subname//' loaded tide metadata from: ', trim(tide_data_file)
+     write(nu_diag,*) subname//' tide_nconst = ', tide_nconst
+     write(nu_diag,*) subname//' tide grid   = ', tide_nj, tide_ni
+     write(nu_diag,*) subname//' constituent_order = ', trim(tide_constituent_order)
+     write(nu_diag,*) subname//' omega(1) = ', tide_omega(1)
+     write(nu_diag,*) subname//' phase(1) = ', tide_phase(1)
+     write(nu_diag,*) subname//' alpha(1) = ', tide_alpha(1)
+     write(nu_diag,*) subname//' amplitude(1) = ', tide_amplitude(1)
+  endif
 
 #endif
 
-  end subroutine init_tides_metadata
+end subroutine init_tides_metadata
+!=======================================================================
 
   !=======================================================================
   subroutine alloc_tides_fields
@@ -794,7 +831,10 @@ subroutine init_tides_fields
      write(nu_diag,*) subname//' tide_data_file = ', trim(tide_data_file)
   endif
 
-  call ice_open_nc(trim(tide_data_file), fid)
+  fid = -1
+  if (my_task == master_task) then
+     call ice_open_nc(trim(tide_data_file), fid)
+  endif
 
   !---------------------------------------------------------------------
   ! Static 2D fields from prototype file: (nj,ni)
@@ -812,7 +852,9 @@ subroutine init_tides_fields
   call read_harmonic_3d(fid, 'VRe', tide_VRe)
   call read_harmonic_3d(fid, 'VIm', tide_VIm)
 
-  call ice_close_nc(fid)
+  if (my_task == master_task) then
+     call ice_close_nc(fid)
+  endif
 
   tide_fields_loaded = .true.
 
@@ -843,6 +885,51 @@ contains
   end subroutine sanitize3d
 
   !---------------------------------------------------------------------
+  ! subroutine read_static_2d(fid, varname, dest)
+
+  !   integer (kind=int_kind), intent(in) :: fid
+  !   character(len=*), intent(in) :: varname
+  !   real (kind=dbl_kind), dimension(nx_block,ny_block,max_blocks), intent(out) :: dest
+
+  !   integer (kind=int_kind) :: ierr, varid
+  !   real (kind=dbl_kind), allocatable :: g2(:,:)   ! CICE/global Fortran order: (ni,nj)
+
+  !   if (my_task == master_task) then
+  !      allocate(g2(nx_global,ny_global))
+  !   else
+  !      allocate(g2(1,1))
+  !   endif
+
+  !   g2 = c0
+
+  !   if (my_task == master_task) then
+  !      ierr = nf90_inq_varid(fid, trim(varname), varid)
+  !      if (ierr /= nf90_noerr) then
+  !         call abort_ice(error_message=subname//' ERROR missing var '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
+  !              file=__FILE__, line=__LINE__)
+  !      endif
+
+  !      ! File variable is (nj,ni); Fortran receiver is (ni,nj)
+  !      ierr = nf90_get_var(fid, varid, g2)
+  !      if (ierr /= nf90_noerr) then
+  !         call abort_ice(error_message=subname//' ERROR reading '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
+  !              file=__FILE__, line=__LINE__)
+  !      endif
+
+  !      call sanitize2d(g2)
+
+  !      write(nu_diag,*) subname//' raw ', trim(varname), ' min/max = ', minval(g2), maxval(g2)
+  !   endif
+
+  !   call scatter_global(dest, g2, master_task, distrb_info, &
+  !        field_loc_center, field_type_scalar)
+
+  !   deallocate(g2)
+
+  ! end subroutine read_static_2d
+
+  !---------------------------------------------------------------------
+  !---------------------------------------------------------------------
   subroutine read_static_2d(fid, varname, dest)
 
     integer (kind=int_kind), intent(in) :: fid
@@ -850,37 +937,30 @@ contains
     real (kind=dbl_kind), dimension(nx_block,ny_block,max_blocks), intent(out) :: dest
 
     integer (kind=int_kind) :: ierr, varid
-    real (kind=dbl_kind), allocatable :: file2d(:,:)   ! file order: (nj,ni)
-    real (kind=dbl_kind), allocatable :: g2(:,:)       ! CICE global order: (nx,ny)
+    real (kind=dbl_kind), allocatable :: g2(:,:)   ! Fortran/global order: (ni,nj)
 
     if (my_task == master_task) then
-       allocate(file2d(tide_nj,tide_ni))
        allocate(g2(nx_global,ny_global))
     else
-       allocate(file2d(1,1))
        allocate(g2(1,1))
     endif
 
-    file2d = c0
-    g2     = c0
-
-    ierr = nf90_inq_varid(fid, trim(varname), varid)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR missing var '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
+    g2 = c0
 
     if (my_task == master_task) then
-       ierr = nf90_get_var(fid, varid, file2d)
+       ierr = nf90_inq_varid(fid, trim(varname), varid)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR missing var '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+
+       ierr = nf90_get_var(fid, varid, g2)
        if (ierr /= nf90_noerr) then
           call abort_ice(error_message=subname//' ERROR reading '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
                file=__FILE__, line=__LINE__)
        endif
 
-       call sanitize2d(file2d)
-
-       ! file2d is (nj,ni); CICE scatter_global expects (nx_global,ny_global)
-       g2 = transpose(file2d)
+       call sanitize2d(g2)
 
        write(nu_diag,*) subname//' raw ', trim(varname), ' min/max = ', minval(g2), maxval(g2)
     endif
@@ -888,10 +968,9 @@ contains
     call scatter_global(dest, g2, master_task, distrb_info, &
          field_loc_center, field_type_scalar)
 
-    deallocate(file2d, g2)
+    deallocate(g2)
 
   end subroutine read_static_2d
-
   !---------------------------------------------------------------------
   subroutine read_harmonic_3d(fid, varname, dest)
 
@@ -900,49 +979,55 @@ contains
     real (kind=dbl_kind), dimension(nx_block,ny_block,max_blocks,tide_nconst), intent(out) :: dest
 
     integer (kind=int_kind) :: ierr, varid, n
-    real (kind=dbl_kind), allocatable :: file3d(:,:,:) ! file order: (constituents,nj,ni)
-    real (kind=dbl_kind), allocatable :: g2(:,:)       ! CICE global order: (nx,ny)
+    real (kind=dbl_kind), allocatable :: g2(:,:)   ! Fortran/global order: (ni,nj)
 
     if (my_task == master_task) then
-       allocate(file3d(tide_nconst,tide_nj,tide_ni))
        allocate(g2(nx_global,ny_global))
     else
-       allocate(file3d(1,1,1))
        allocate(g2(1,1))
     endif
 
-    file3d = c0
-    g2     = c0
-
-    ierr = nf90_inq_varid(fid, trim(varname), varid)
-    if (ierr /= nf90_noerr) then
-       call abort_ice(error_message=subname//' ERROR missing var '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
-            file=__FILE__, line=__LINE__)
-    endif
+    g2 = c0
 
     if (my_task == master_task) then
-       ierr = nf90_get_var(fid, varid, file3d)
+       ierr = nf90_inq_varid(fid, trim(varname), varid)
        if (ierr /= nf90_noerr) then
-          call abort_ice(error_message=subname//' ERROR reading '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
+          call abort_ice(error_message=subname//' ERROR missing var '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
                file=__FILE__, line=__LINE__)
        endif
-
-       call sanitize3d(file3d)
-
-       g2 = transpose(file3d(1,:,:))
-       write(nu_diag,*) subname//' raw ', trim(varname), '(1) min/max = ', minval(g2), maxval(g2)
     endif
 
     do n = 1, tide_nconst
+
+       g2 = c0
+
        if (my_task == master_task) then
-          g2 = transpose(file3d(n,:,:))
+          ! File variable is hRe(constituents,nj,ni)
+          ! Fortran netCDF view is effectively (ni,nj,constituents)
+          ierr = nf90_get_var(fid, varid, g2, &
+                              start=(/1,1,n/), &
+                              count=(/nx_global,ny_global,1/))
+          if (ierr /= nf90_noerr) then
+             write(nu_diag,*) subname//' ERROR reading ', trim(varname), ' constituent n = ', n
+             write(nu_diag,*) subname//' attempted start = (/ 1, 1, ', n, ' /)'
+             write(nu_diag,*) subname//' attempted count = (/ ', nx_global, ', ', ny_global, ', 1 /)'
+             call abort_ice(error_message=subname//' ERROR reading '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
+                  file=__FILE__, line=__LINE__)
+          endif
+
+          call sanitize2d(g2)
+
+          if (n == 1) then
+             write(nu_diag,*) subname//' raw ', trim(varname), '(1) min/max = ', minval(g2), maxval(g2)
+          endif
        endif
 
        call scatter_global(dest(:,:,:,n), g2, master_task, distrb_info, &
             field_loc_center, field_type_scalar)
+
     enddo
 
-    deallocate(file3d, g2)
+    deallocate(g2)
 
   end subroutine read_harmonic_3d
 
