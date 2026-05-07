@@ -43,12 +43,9 @@ module ice_forcing
   ! define subroutines that other modules will use
   implicit none
   private
-  ! public :: alloc_forcing, init_forcing_atmo, init_forcing_ocn, init_snowtable, &
-  !           get_forcing_atmo, get_forcing_ocn, get_wave_spec, &
-  !           read_clim_data, read_clim_data_nc, read_data_nc_point, &
-  !           interpolate_data, interp_coeff_monthly, interp_coeff
   public :: alloc_forcing, init_forcing_atmo, init_forcing_ocn, init_snowtable, &
        init_tides_metadata, alloc_tides_fields, init_tides_fields, &
+       compute_tides_at_time, &
        get_forcing_atmo, get_forcing_ocn, get_wave_spec, &
        read_clim_data, read_clim_data_nc, read_data_nc_point, &
        interpolate_data, interp_coeff_monthly, interp_coeff
@@ -187,6 +184,11 @@ module ice_forcing
   logical(kind=log_kind), public :: &
        tide_use_currents, & ! apply tidal u/v from harmonics
        tide_use_ssh         ! apply tidal eta -> ss_tltx/ss_tlty
+  real (kind=dbl_kind), public :: &
+       tide_curr_fac  = 0.1_dbl_kind,  & ! multiply tidal currents by this factor
+       tide_speed_cap = 0.5_dbl_kind,  & ! hard cap on |u_tide|, |v_tide| vector speed [m/s]
+       tide_wct_min   = 20.0_dbl_kind, & ! do not form currents where wct <= this [m]
+       tide_ramp_days = 5.0_dbl_kind     ! linear ramp-up time [days]
   ! prints forcing debugging output if true
   logical (kind=log_kind), public :: debug_forcing
   ! jday time vector from atm forcing files
@@ -1032,6 +1034,192 @@ contains
   end subroutine read_harmonic_3d
 
 end subroutine init_tides_fields
+
+!=======================================================================
+! subroutine compute_tides_at_time(eta_tide, Utide_tr, Vtide_tr, utide_cur, vtide_cur)
+
+!   real (kind=dbl_kind), dimension(nx_block,ny_block,max_blocks), intent(out) :: &
+!        eta_tide, Utide_tr, Vtide_tr, utide_cur, vtide_cur
+
+!   integer (kind=int_kind) :: n
+!   integer (kind=int_kind) :: days_since_ref
+!   real    (kind=dbl_kind) :: tsec_ref
+!   real    (kind=dbl_kind) :: arg, carg, sarg
+!   real    (kind=dbl_kind), parameter :: tiny_wct = 1.0d-6
+
+!   character(len=*), parameter :: subname = '(compute_tides_at_time)'
+
+!   if (trim(tide_data_type) /= 'harmonic') then
+!      eta_tide  = c0
+!      Utide_tr  = c0
+!      Vtide_tr  = c0
+!      utide_cur = c0
+!      vtide_cur = c0
+!      return
+!   endif
+
+!   if (.not. tide_metadata_loaded) then
+!      call abort_ice(error_message=subname//' ERROR tide metadata not loaded', &
+!           file=__FILE__, line=__LINE__)
+!   endif
+
+!   if (.not. tide_fields_loaded) then
+!      call abort_ice(error_message=subname//' ERROR tide fields not loaded', &
+!           file=__FILE__, line=__LINE__)
+!   endif
+
+!   ! Time reference used by the CATS metadata:
+!   ! phase is relative to t0 = 1992-01-01 00:00:00
+!   days_since_ref = compute_days_between(1992, 1, 1, myear, mmonth, mday)
+!   tsec_ref = real(days_since_ref, kind=dbl_kind) * 86400.0_dbl_kind + &
+!              real(msec,           kind=dbl_kind)
+
+!   eta_tide  = c0
+!   Utide_tr  = c0
+!   Vtide_tr  = c0
+!   utide_cur = c0
+!   vtide_cur = c0
+
+!   do n = 1, tide_nconst
+!      arg  = tide_omega(n) * tsec_ref + tide_phase(n)
+!      carg = cos(arg)
+!      sarg = sin(arg)
+
+!      eta_tide(:,:,:) = eta_tide(:,:,:) + tide_hRe(:,:,:,n) * carg - tide_hIm(:,:,:,n) * sarg
+!      Utide_tr(:,:,:) = Utide_tr(:,:,:) + tide_URe(:,:,:,n) * carg - tide_UIm(:,:,:,n) * sarg
+!      Vtide_tr(:,:,:) = Vtide_tr(:,:,:) + tide_VRe(:,:,:,n) * carg - tide_VIm(:,:,:,n) * sarg
+!   enddo
+
+!   where (tide_mask > p5 .and. tide_wct > tiny_wct)
+!      utide_cur = Utide_tr / tide_wct
+!      vtide_cur = Vtide_tr / tide_wct
+!   elsewhere
+!      eta_tide  = c0
+!      Utide_tr  = c0
+!      Vtide_tr  = c0
+!      utide_cur = c0
+!      vtide_cur = c0
+!   end where
+
+!   if (debug_forcing .and. my_task == master_task) then
+!      write(nu_diag,*) subname//' myear,mmonth,mday,msec = ', myear, mmonth, mday, msec
+!      write(nu_diag,*) subname//' tsec_ref = ', tsec_ref
+!      write(nu_diag,*) subname//' eta_tide   min/max = ', minval(eta_tide),  maxval(eta_tide)
+!      write(nu_diag,*) subname//' Utide_tr   min/max = ', minval(Utide_tr),  maxval(Utide_tr)
+!      write(nu_diag,*) subname//' Vtide_tr   min/max = ', minval(Vtide_tr),  maxval(Vtide_tr)
+!      write(nu_diag,*) subname//' utide_cur  min/max = ', minval(utide_cur), maxval(utide_cur)
+!      write(nu_diag,*) subname//' vtide_cur  min/max = ', minval(vtide_cur), maxval(vtide_cur)
+!   endif
+
+! end subroutine compute_tides_at_time
+!=======================================================================
+subroutine compute_tides_at_time(eta_tide, Utide_tr, Vtide_tr, utide_cur, vtide_cur)
+
+  integer (kind=int_kind) :: n, i, j, iblk
+  integer (kind=int_kind) :: days_since_ref
+  real    (kind=dbl_kind) :: tsec_ref
+  real    (kind=dbl_kind) :: arg, carg, sarg
+  real    (kind=dbl_kind) :: ramp
+  real    (kind=dbl_kind) :: spd, sf
+
+  real (kind=dbl_kind), dimension(nx_block,ny_block,max_blocks), intent(out) :: &
+       eta_tide, Utide_tr, Vtide_tr, utide_cur, vtide_cur
+
+  character(len=*), parameter :: subname = '(compute_tides_at_time)'
+
+  if (trim(tide_data_type) /= 'harmonic') then
+     eta_tide  = c0
+     Utide_tr  = c0
+     Vtide_tr  = c0
+     utide_cur = c0
+     vtide_cur = c0
+     return
+  endif
+
+  if (.not. tide_metadata_loaded) then
+     call abort_ice(error_message=subname//' ERROR tide metadata not loaded', &
+          file=__FILE__, line=__LINE__)
+  endif
+
+  if (.not. tide_fields_loaded) then
+     call abort_ice(error_message=subname//' ERROR tide fields not loaded', &
+          file=__FILE__, line=__LINE__)
+  endif
+
+  ! CATS phase metadata are referenced to 1992-01-01 00:00:00
+  days_since_ref = compute_days_between(1992, 1, 1, myear, mmonth, mday)
+  tsec_ref = real(days_since_ref, kind=dbl_kind) * 86400.0_dbl_kind + &
+             real(msec,           kind=dbl_kind)
+
+  eta_tide  = c0
+  Utide_tr  = c0
+  Vtide_tr  = c0
+  utide_cur = c0
+  vtide_cur = c0
+
+  do n = 1, tide_nconst
+     arg  = tide_omega(n) * tsec_ref + tide_phase(n)
+     carg = cos(arg)
+     sarg = sin(arg)
+
+     eta_tide(:,:,:) = eta_tide(:,:,:) + tide_hRe(:,:,:,n) * carg - tide_hIm(:,:,:,n) * sarg
+     Utide_tr(:,:,:) = Utide_tr(:,:,:) + tide_URe(:,:,:,n) * carg - tide_UIm(:,:,:,n) * sarg
+     Vtide_tr(:,:,:) = Vtide_tr(:,:,:) + tide_VRe(:,:,:,n) * carg - tide_VIm(:,:,:,n) * sarg
+  enddo
+
+  ! Convert transports -> currents only where mask and water-column thickness are safe
+  where (tide_mask > p5 .and. tide_wct > tide_wct_min)
+     utide_cur = tide_curr_fac * (Utide_tr / tide_wct)
+     vtide_cur = tide_curr_fac * (Vtide_tr / tide_wct)
+  elsewhere
+     eta_tide  = c0
+     Utide_tr  = c0
+     Vtide_tr  = c0
+     utide_cur = c0
+     vtide_cur = c0
+  end where
+
+  ! Linear ramp-up over tide_ramp_days
+  if (tide_ramp_days > c0) then
+     ramp = min(c1, tsec_ref / (tide_ramp_days * 86400.0_dbl_kind))
+  else
+     ramp = c1
+  endif
+
+  eta_tide  = ramp * eta_tide
+  Utide_tr  = ramp * Utide_tr
+  Vtide_tr  = ramp * Vtide_tr
+  utide_cur = ramp * utide_cur
+  vtide_cur = ramp * vtide_cur
+
+  ! Hard cap on tidal current vector speed
+  do iblk = 1, max_blocks
+     do j = 1, ny_block
+        do i = 1, nx_block
+           spd = sqrt(utide_cur(i,j,iblk)**2 + vtide_cur(i,j,iblk)**2)
+           if (spd > tide_speed_cap .and. spd > c0) then
+              sf = tide_speed_cap / spd
+              utide_cur(i,j,iblk) = utide_cur(i,j,iblk) * sf
+              vtide_cur(i,j,iblk) = vtide_cur(i,j,iblk) * sf
+              Utide_tr(i,j,iblk)  = Utide_tr(i,j,iblk) * sf
+              Vtide_tr(i,j,iblk)  = Vtide_tr(i,j,iblk) * sf
+           endif
+        enddo
+     enddo
+  enddo
+
+  if (debug_forcing .and. my_task == master_task) then
+     write(nu_diag,*) subname//' date/time = ', myear, mmonth, mday, msec
+     write(nu_diag,*) subname//' tsec_ref   = ', tsec_ref
+     write(nu_diag,*) subname//' ramp       = ', ramp
+     write(nu_diag,*) subname//' eta_tide  min/max = ', minval(eta_tide),  maxval(eta_tide)
+     write(nu_diag,*) subname//' Utide_tr  min/max = ', minval(Utide_tr),  maxval(Utide_tr)
+     write(nu_diag,*) subname//' Vtide_tr  min/max = ', minval(Vtide_tr),  maxval(Vtide_tr)
+     write(nu_diag,*) subname//' utide_cur min/max = ', minval(utide_cur), maxval(utide_cur)
+     write(nu_diag,*) subname//' vtide_cur min/max = ', minval(vtide_cur), maxval(vtide_cur)
+  endif
+
+end subroutine compute_tides_at_time
 !=======================================================================
 
   !=======================================================================
@@ -1188,7 +1376,7 @@ end subroutine init_tides_fields
     use ice_domain, only             :  nblocks, blocks_ice, distrb_info
     use ice_grid, only               :  tmask, umask
     use ice_global_reductions, only  :  global_minval, global_maxval
-    use ice_flux, only               :  sss, sst, Tf, uocn, vocn
+    use ice_flux, only               :  sss, sst, Tf, uocn, vocn, ss_tltx, ss_tlty
     integer (kind=int_kind)          :: i, j, iblk, &      ! block index
                                         ilo,ihi,jlo,jhi, & ! beginning and end of physical domain
                                         modadj, &          ! adjustment to make mod a postive number
@@ -1196,6 +1384,8 @@ end subroutine init_tides_fields
     type (block)                     :: this_block
     real (kind=dbl_kind), intent(in) :: dt
     real (kind=dbl_kind)             :: vmin, vmax, dayfrac, weekfrac, monthfrac, secday
+    real (kind=dbl_kind), dimension(nx_block,ny_block,max_blocks) :: &
+         eta_tide, Utide_tr, Vtide_tr, utide_cur, vtide_cur
     character(len=*), parameter      :: subname = '(get_forcing_ocn)'
     call icepack_query_parameters(secday_out=secday)
     if (local_debug .and. my_task == master_task) write(nu_diag,*) subname,' fdbg start'
@@ -1236,6 +1426,18 @@ end subroutine init_tides_fields
        call uniform_data_ocn('N',c0) ! directon does not matter for c0
     elseif (trim(ocn_data_type) == 'AFIM') then
        call AFIM_data(dt)
+       if (trim(tide_data_type) == 'harmonic') then
+          call compute_tides_at_time(eta_tide, Utide_tr, Vtide_tr, utide_cur, vtide_cur)
+          if (tide_use_currents) then
+             uocn(:,:,:) = uocn(:,:,:) + utide_cur(:,:,:)
+             vocn(:,:,:) = vocn(:,:,:) + vtide_cur(:,:,:)
+          endif
+          ! v1: keep SSH coupling disabled until currents are stable
+          if (tide_use_ssh) then
+             ss_tltx(:,:,:) = c0
+             ss_tlty(:,:,:) = c0
+          endif
+       endif
     endif
     call ice_timer_stop(timer_forcing)
   end subroutine get_forcing_ocn
