@@ -125,8 +125,8 @@
            deltaminEVP, deltaminVP, capping,     &
            elasticDamp, dyn_area_min, dyn_mass_min, &
            lateral_drag, boundary_condition, lateral_drag_stress_factor, &
-           Cs, Cq, u_cap, C_L, u0, form_func, &
-           u_blend, blend_exp, u_sat, eps_blend
+           form_func, Cs, Cq, C_L, blend_exp, eps_blend, u0, u_cap ! , &
+      ! u_blend, u_sat
       use ice_dyn_vp, only: &
           maxits_nonlin, precond, dim_fgmres, dim_pgmres, maxits_fgmres, &
           maxits_pgmres, monitor_nonlin, monitor_fgmres, &
@@ -249,8 +249,9 @@
 
 
       namelist /dynamics_nml/ &
-           boundary_condition, lateral_drag, Cs, Cq, u_cap, C_L, form_func, u0,   &
-           u_blend, blend_exp, u_sat, eps_blend,                                  &
+           boundary_condition, lateral_drag, form_func, Cs, Cq, C_L,       &
+           blend_exp, eps_blend, u0, u_cap,                                &
+           ! u_blend, u_sat,                                                &
            kdyn,           ndte,           revised_evp,    yield_curve,    &
            evp_algorithm,  elasticDamp,                                    &
            brlx,           arlx,           ssh_stress,                     &
@@ -429,13 +430,13 @@
       form_func             = 'static'        ! 'static', 'quad', 'sum', 'linear', 'quad_cap', 'sum_quad_cap'
       Cs                    = 1.0e-4_dbl_kind ! see Liu et al. (2022) section 3.3
       Cq                    = 1.0_dbl_kind    ! see Liu et al. (2022) section 3.3
-      u_cap                 = 0.0_dbl_kind    ! 
       C_L                   = 0.0_dbl_kind    ! linear form function scaling coeficient (unitless)
-      u0                    = 5.0e-4_dbl_kind ! see Lemieux et al. (2015) section 6
-      u_blend               = 5.0e-4_dbl_kind  ! velocity blending scale for form_func='blend_vel' (m/s)
       blend_exp             = 2.0_dbl_kind     ! smoothness/sharpness exponent for blend_vel/blend_strain
-      u_sat                 = 5.0e-4_dbl_kind  ! saturation speed scale for form_func='quad_sat' (m/s)
       eps_blend             = 1.0e-7_dbl_kind  ! strain-rate blending scale for form_func='blend_strain' (1/s)
+      u_cap                 = 0.0_dbl_kind     !
+      ! u_blend               = 5.0e-4_dbl_kind  ! velocity blending scale for form_func='blend_vel' (m/s)
+      ! u_sat                 = 5.0e-4_dbl_kind  ! saturation speed scale for form_func='quad_sat' (m/s)
+      u0                    = 5.0e-4_dbl_kind ! see Lemieux et al. (2015) section 6
       kdyn                  = 1               ! type of dynamics (-1, 0 = off, 1 = evp, 2 = eap, 3 = vp)
       ndtd                  = 1               ! dynamic time steps per thermodynamic time step
       ndte                  = 120             ! subcycles per dynamics timestep:  ndte=dt_dyn/dte
@@ -1062,17 +1063,17 @@
       call broadcast_scalar(kcatbound,            master_task)
       !lateral drag
       call broadcast_scalar(boundary_condition,   master_task)
-      call broadcast_scalar(form_func,            master_task)
       call broadcast_scalar(lateral_drag,         master_task)
+      call broadcast_scalar(form_func,            master_task)
       call broadcast_scalar(Cs,                   master_task)
       call broadcast_scalar(Cq,                   master_task)
-      call broadcast_scalar(u_cap,                master_task)
       call broadcast_scalar(C_L,                  master_task)
-      call broadcast_scalar(u0,                   master_task)
-      call broadcast_scalar(u_blend,              master_task)
       call broadcast_scalar(blend_exp,            master_task)
-      call broadcast_scalar(u_sat,                master_task)
       call broadcast_scalar(eps_blend,            master_task)
+      call broadcast_scalar(u0,                   master_task)
+      call broadcast_scalar(u_cap,                master_task)
+      ! call broadcast_scalar(u_blend,              master_task)
+      ! call broadcast_scalar(u_sat,                master_task)
       !tides
       call broadcast_scalar(tide_data_type,       master_task)
       call broadcast_scalar(tide_data_format,     master_task)
@@ -1525,11 +1526,12 @@
             endif
             abort_list = trim(abort_list)//":44"
          endif
-         if (form_func /= 'static'       .and. form_func /= 'quad'         .and. &
-              form_func /= 'quad_cap'     .and. form_func /= 'sum'          .and. &
-              form_func /= 'sum_quad_cap' .and. form_func /= 'linear'       .and. &
-              form_func /= 'blend_vel'    .and. form_func /= 'blend_strain' .and. &
-              form_func /= 'quad_sat') then
+         if (form_func /= 'static' .and. form_func /= 'quad' .and. form_func /= 'linear' .and. form_func /= 'blend_strain') then
+         ! if (form_func /= 'static'       .and. form_func /= 'quad'         .and. &
+         !      form_func /= 'quad_cap'     .and. form_func /= 'sum'          .and. &
+         !      form_func /= 'sum_quad_cap' .and. form_func /= 'linear'       .and. &
+         !      form_func /= 'blend_vel'    .and. form_func /= 'blend_strain' .and. &
+         !      form_func /= 'quad_sat') then
             if (my_task == master_task) then
                write(nu_diag,*) subname//' ERROR: invalid lateral drag form function scheme'
                write(nu_diag,*) subname//' ERROR: form_func should be: static, quad, quad_cap, sum, sum_quad_cap, linear, blend_vel, blend_strain, or quad_sat'
