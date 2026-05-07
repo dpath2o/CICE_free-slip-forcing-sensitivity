@@ -149,7 +149,7 @@
       ! conditions for form functions are done in evp(dt) prior to ndte loop
       character (len=char_len), public :: &
          boundary_condition, &  ! 'no_slip' (Dirchlet) or 'free_slip' (Neumann)
-         form_func              ! 'static', 'quad', 'sum', 'linear', 'blend_vel', 'blend_strain', 'quad_sat'
+         form_func              ! 'static', 'quad', linear' or 'blend_strain'
       real(kind=dbl_kind), public :: &
            Cs, &                  ! static function coefficient; Liu et al. (2022) eq.13; 5.0*10^{−4} (units m/s^2)
            Cq, &                  ! quadratic coefficient (units m^-1)
@@ -157,20 +157,20 @@
            u_cap, &               ! quadratic capped method threshold for u/v; units m/s
            u_cap_eff, &           ! effective cap (>=0), set in evp(dt)
            u0, &                  ! residual velocity for lateral drag stress (and seabed stress) (units m/s)
-           u_blend, &             ! velocity transition scale for blend_vel, m/s
            eps_blend, &           ! strain-rate transition scale for blend_strain, s^-1
-           blend_exp, &           ! sharpness of transition, dimensionless
-           u_sat                  ! saturation velocity scale for quad_sat, m/s
+           blend_exp              ! sharpness of transition, dimensionless
+      ! u_blend, &             ! velocity transition scale for blend_vel, m/s
+      ! u_sat                  ! saturation velocity scale for quad_sat, m/s
       ! lateral drag form function switches based 'form_func'
       ! if form_func == 'sum' then static_switch = 1, and quad_switch = 1
       real (kind=dbl_kind), public :: &
            static_switch, &         ! 1 (default); 1 = enable static form function, 0 = disable 
            quad_switch,   &         ! 0 (default); 1 = enable quadratic form function, 0 = disable
-           quad_cap_switch, &       ! 0 (default); 1 = enable capped-quadratic form function, 0 = disable
+           ! quad_cap_switch, &       ! 0 (default); 1 = enable capped-quadratic form function, 0 = disable
            linear_switch, &         ! 0 (default); 1 = enable linear form function, 0 = disable
-           blend_vel_switch, &
-           blend_strain_switch, &
-           quad_sat_switch
+           ! blend_vel_switch, &
+           blend_strain_switch
+           ! quad_sat_switch
       ! diagnostic lateral drag stress terms
       real(kind=dbl_kind), dimension (:,:,:), allocatable, public :: &
          KuU , KuE , KuN, &
@@ -1120,7 +1120,6 @@
 
 !=======================================================================
 ! Integration of the momentum equation to find velocity u at E location on C grid
-
       subroutine stepu_C (nx_block,   ny_block, &
            icell,      Cw,       &
            indxi,      indxj,    &
@@ -1178,26 +1177,27 @@
            taux               , & ! part of ocean stress term
            Cb                 , & ! complete seabed (basal) stress coeff
            rhow               , & ! density of water
-           Cl
+           Cl                     ! complete lateral-drag stress coeff
 
       ! stepu_C locals (add near other locals)
-      real(kind=dbl_kind) :: u_noCDP, du, umag_eff
-      real(kind=dbl_kind) :: sum_du_coast, sum_absu_coast
-      integer(kind=int_kind) :: n_coast
+      ! real(kind=dbl_kind) :: u_noCDP, du
+      ! real(kind=dbl_kind) :: sum_du_coast, sum_absu_coast
+      ! integer(kind=int_kind) :: n_coast
 
       ! ! lateral drag
-      real(kind=dbl_kind) :: umag, invccc, phi
+      real(kind=dbl_kind) :: &
+           umag, umag_eff, invccc, phi
       real (kind=dbl_kind) :: &
-           ub, us, eb, w_vel, w_eps, &
-           phi_static, phi_quad, phi_quad_cap, &
-           phi_blend_vel, phi_blend_strain, phi_quad_sat, &
-           eps_eff
+           eb, w_eps, eps_eff, &
+           phi_static, phi_quad, phi_blend_strain
+      ! ub, us, w_vel, &
+      ! phi_blend_vel,  phi_quad_cap, phi_quad_sat
 
       character(len=*), parameter :: subname = '(stepu_C)'
 
-      sum_du_coast = c0;
-      sum_absu_coast = c0;
-      n_coast = 0
+      ! sum_du_coast = c0;
+      ! sum_absu_coast = c0;
+      ! n_coast = 0
       Kux = c0
       Kuy = c0
 
@@ -1224,10 +1224,10 @@
          invccc = c1 / ccc
 
          ! (magnitude of relative ocean current)*rhow*drag*aice
-         vrel = aiX(i,j)*rhow*Cw(i,j)*sqrt((uocn(i,j) - uold)**2 + &
-                                           (vocn(i,j) - vold)**2)  ! m/s
+         vrel = aiX(i,j) * rhow * Cw(i,j) * sqrt((uocn(i,j) - uold)**2 + (vocn(i,j) - vold)**2)  ! m/s
+
          ! ice/ocean stress
-         taux = vrel*waterx(i,j) ! NOTE this is not the entire
+         taux = vrel*waterx(i,j) ! NOTE this is not the entire stress
 
          ! seabed stress
          Cb = Tb(i,j) * invccc
@@ -1236,32 +1236,32 @@
          umag_eff         = min(umag, u_cap_eff)
          phi_static       = Cs * invccc
          phi_quad         = Cq * umag
-         phi_quad_cap     = Cq * umag_eff
-         phi_blend_vel    = c0
+         ! phi_quad_cap     = Cq * umag_eff
+         ! phi_blend_vel    = c0
          phi_blend_strain = c0
-         phi_quad_sat     = c0
-         if (blend_vel_switch == c1) then
-            ub            = max(u_blend, 1.0e-20_dbl_kind)
-            w_vel         = umag**blend_exp / (umag**blend_exp + ub**blend_exp)
-            phi_blend_vel = (c1 - w_vel) * phi_quad + w_vel * phi_static
-         endif
+         ! phi_quad_sat     = c0
+         ! if (blend_vel_switch == c1) then
+         !    ub            = max(u_blend, 1.0e-20_dbl_kind)
+         !    w_vel         = umag**blend_exp / (umag**blend_exp + ub**blend_exp)
+         !    phi_blend_vel = (c1 - w_vel) * phi_quad + w_vel * phi_static
+         ! endif
          if (blend_strain_switch == c1) then
             eb               = max(eps_blend, 1.0e-20_dbl_kind)
             eps_eff          = (deltaU(i,j) + deltaU(i,j-1)) / max(uarea(i,j) + uarea(i,j-1), 1.0e-20_dbl_kind)
             w_eps            = eps_eff**blend_exp / (eps_eff**blend_exp + eb**blend_exp)
             phi_blend_strain = (c1 - w_eps) * phi_quad + w_eps * phi_static
          endif
-         if (quad_sat_switch == c1) then
-            us           = max(u_sat, 1.0e-20_dbl_kind)
-            phi_quad_sat = Cq * umag / (c1 + umag / us)
-         endif
+         ! if (quad_sat_switch == c1) then
+         !    us           = max(u_sat, 1.0e-20_dbl_kind)
+         !    phi_quad_sat = Cq * umag / (c1 + umag / us)
+         ! endif
          phi = (static_switch        * phi_static      ) + &
                (quad_switch          * phi_quad        ) + &
-               (quad_cap_switch      * phi_quad_cap    ) + &
+               ! (quad_cap_switch      * phi_quad_cap    ) + &
                (linear_switch        * C_L             ) + &
-               (blend_vel_switch     * phi_blend_vel   ) + &
-               (blend_strain_switch  * phi_blend_strain) + &
-               (quad_sat_switch      * phi_quad_sat    )
+               ! (blend_vel_switch     * phi_blend_vel   ) + &
+               (blend_strain_switch  * phi_blend_strain) 
+               ! (quad_sat_switch      * phi_quad_sat    )
          Cl  = Ku(i,j) * phi
 
          ! stresses
@@ -1344,27 +1344,26 @@
          tauy               , & ! part of ocean stress term
          Cb                 , & ! complete seabed (basal) stress coeff
          rhow               , & ! density of water
-         Cl
+         Cl                     ! complete lateral-drag stress coeff
 
       ! stepv_C locals (add near other locals)
-      real(kind=dbl_kind) :: v_noCDP, dv, umag_eff
-      real(kind=dbl_kind) :: sum_dv_coast, sum_absv_coast
-      integer(kind=int_kind) :: n_coast
+      ! real(kind=dbl_kind) :: v_noCDP, dv
+      ! real(kind=dbl_kind) :: sum_dv_coast, sum_absv_coast
+      ! integer(kind=int_kind) :: n_coast
 
       ! lateral drag
-      ! real(kind=dbl_kind) :: umag, invccc, phi
-      real(kind=dbl_kind) :: umag, invccc, phi
+      real(kind=dbl_kind) :: umag, umag_eff, invccc, phi
       real (kind=dbl_kind) :: &
-           ub, us, eb, w_vel, w_eps, &
-           phi_static, phi_quad, phi_quad_cap, &
-           phi_blend_vel, phi_blend_strain, phi_quad_sat, &
-           eps_eff
+           eb, w_eps, eps_eff, &
+           phi_static, phi_quad, phi_blend_strain
+      ! ub, us, w_vel, &
+      ! phi_quad_cap, phi_blend_vel, phi_quad_sat
 
       character(len=*), parameter :: subname = '(stepv_C)'
 
-      sum_dv_coast = c0;
-      sum_absv_coast = c0;
-      n_coast = 0
+      ! sum_dv_coast = c0;
+      ! sum_absv_coast = c0;
+      ! n_coast = 0
       Kux = c0
       Kuy = c0
 
@@ -1391,8 +1390,8 @@
          invccc = c1 / ccc
 
          ! (magnitude of relative ocean current)*rhow*drag*aice
-         vrel = aiX(i,j)*rhow*Cw(i,j)*sqrt((uocn(i,j) - uold)**2 + &
-                                           (vocn(i,j) - vold)**2)  ! m/s
+         vrel = aiX(i,j) * rhow * Cw(i,j) * sqrt((uocn(i,j) - uold)**2 + (vocn(i,j) - vold)**2)  ! m/s
+
          ! ice/ocean stress
          tauy = vrel*watery(i,j) ! NOTE this is not the entire ocn stress
 
@@ -1403,32 +1402,32 @@
          umag_eff         = min(umag, u_cap_eff)
          phi_static       = Cs * invccc
          phi_quad         = Cq * umag
-         phi_quad_cap     = Cq * umag_eff
-         phi_blend_vel    = c0
+         ! phi_quad_cap     = Cq * umag_eff
+         ! phi_blend_vel    = c0
          phi_blend_strain = c0
-         phi_quad_sat     = c0
-         if (blend_vel_switch == c1) then
-            ub            = max(u_blend, 1.0e-20_dbl_kind)
-            w_vel         = umag**blend_exp / (umag**blend_exp + ub**blend_exp)
-            phi_blend_vel = (c1 - w_vel) * phi_quad + w_vel * phi_static
-         endif
+         ! phi_quad_sat     = c0
+         ! if (blend_vel_switch == c1) then
+         !    ub            = max(u_blend, 1.0e-20_dbl_kind)
+         !    w_vel         = umag**blend_exp / (umag**blend_exp + ub**blend_exp)
+         !    phi_blend_vel = (c1 - w_vel) * phi_quad + w_vel * phi_static
+         ! endif
          if (blend_strain_switch == c1) then
             eb               = max(eps_blend, 1.0e-20_dbl_kind)
             eps_eff          = (deltaU(i,j) + deltaU(i-1,j)) / max(uarea(i,j) + uarea(i-1,j), 1.0e-20_dbl_kind)
             w_eps            = eps_eff**blend_exp / (eps_eff**blend_exp + eb**blend_exp)
             phi_blend_strain = (c1 - w_eps) * phi_quad + w_eps * phi_static
          endif
-         if (quad_sat_switch == c1) then
-            us           = max(u_sat, 1.0e-20_dbl_kind)
-            phi_quad_sat = Cq * umag / (c1 + umag / us)
-         endif
+         ! if (quad_sat_switch == c1) then
+         !    us           = max(u_sat, 1.0e-20_dbl_kind)
+         !    phi_quad_sat = Cq * umag / (c1 + umag / us)
+         ! endif
          phi = (static_switch        * phi_static      ) + &
                (quad_switch          * phi_quad        ) + &
-               (quad_cap_switch      * phi_quad_cap    ) + &
+               ! (quad_cap_switch      * phi_quad_cap    ) + &
                (linear_switch        * C_L             ) + &
-               (blend_vel_switch     * phi_blend_vel   ) + &
-               (blend_strain_switch  * phi_blend_strain) + &
-               (quad_sat_switch      * phi_quad_sat    )
+               ! (blend_vel_switch     * phi_blend_vel   ) + &
+               (blend_strain_switch  * phi_blend_strain) 
+               ! (quad_sat_switch      * phi_quad_sat    )
          Cl  = Ku(i,j) * phi
 
          ! stresses

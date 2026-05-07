@@ -49,11 +49,10 @@
            seabed_stress_factor_LKD, seabed_stress_factor_prob, seabed_stress_method, &
            seabed_stress, Ktens, revp, &
            lateral_drag, boundary_condition, form_func, lateral_drag_stress_factor, &
-           Cs, Cq, u_cap, u_cap_eff, C_L, u0, &
-           u_blend, blend_exp, u_sat, eps_blend, &
-          static_switch, quad_switch, quad_cap_switch, linear_switch, &
-          blend_vel_switch, blend_strain_switch, quad_sat_switch, &
-          u_blend, eps_blend, blend_exp, u_sat
+           Cs, Cq, C_L, u0, eps_blend, blend_exp, u_cap_eff, u_cap, &
+           static_switch, quad_switch, linear_switch, blend_strain_switch
+           ! u_blend, u_sat, &
+           ! quad_cap_switch, blend_vel_switch, quad_sat_switch
       use ice_fileunits, only: nu_diag
       use ice_exit, only: abort_ice
       use icepack_intfc, only: icepack_warnings_flush, icepack_warnings_aborted
@@ -985,11 +984,11 @@
          ! defaults each timestep
          static_switch        = c0
          quad_switch          = c0
-         quad_cap_switch      = c0
+         ! quad_cap_switch      = c0
          linear_switch        = c0
-         blend_vel_switch     = c0
+         ! blend_vel_switch     = c0
          blend_strain_switch  = c0
-         quad_sat_switch      = c0
+         ! quad_sat_switch      = c0
 
          ! default: cap disabled unless explicitly requested
          u_cap_eff = huge(1.0d0)
@@ -1007,38 +1006,6 @@
          case ('quad')
             quad_switch = c1
 
-         case ('quad_cap')
-            quad_cap_switch = c1
-            if (u_cap <= 0.0d0) then
-               call abort_ice(error_message='form_func=quad_cap requires u_cap>0', &
-                              file=__FILE__, line=__LINE__)
-            endif
-
-         case ('sum')
-            static_switch = c1
-            quad_switch   = c1
-            linear_switch = merge(c1, c0, C_L > 0.0d0)
-
-         case ('sum_quad_cap')
-            static_switch   = c1
-            quad_cap_switch = c1
-            linear_switch   = merge(c1, c0, C_L > 0.0d0)
-            if (u_cap <= 0.0d0) then
-               call abort_ice(error_message='form_func=sum_quad_cap requires u_cap>0', &
-                              file=__FILE__, line=__LINE__)
-            endif
-
-         case ('blend_vel')
-            blend_vel_switch = c1
-            if (u_blend <= 0.0d0) then
-               call abort_ice(error_message='form_func=blend_vel requires u_blend>0', &
-                              file=__FILE__, line=__LINE__)
-            endif
-            if (blend_exp <= 0.0d0) then
-               call abort_ice(error_message='form_func=blend_vel requires blend_exp>0', &
-                              file=__FILE__, line=__LINE__)
-            endif
-
          case ('blend_strain')
             blend_strain_switch = c1
             if (eps_blend <= 0.0d0) then
@@ -1050,16 +1017,48 @@
                     file=__FILE__, line=__LINE__)
             endif
 
-         case ('quad_sat')
-            quad_sat_switch = c1
-            if (u_sat <= 0.0d0) then
-               call abort_ice(error_message='form_func=quad_sat requires u_sat>0', &
-                              file=__FILE__, line=__LINE__)
-            endif
+         ! case ('quad_cap')
+         !    quad_cap_switch = c1
+         !    if (u_cap <= 0.0d0) then
+         !       call abort_ice(error_message='form_func=quad_cap requires u_cap>0', &
+         !                      file=__FILE__, line=__LINE__)
+         !    endif
 
-         case default
-            call abort_ice(error_message='Unknown form_func='//trim(form_func), &
-                           file=__FILE__, line=__LINE__)
+         ! case ('sum')
+         !    static_switch = c1
+         !    quad_switch   = c1
+         !    linear_switch = merge(c1, c0, C_L > 0.0d0)
+
+         ! case ('sum_quad_cap')
+         !    static_switch   = c1
+         !    quad_cap_switch = c1
+         !    linear_switch   = merge(c1, c0, C_L > 0.0d0)
+         !    if (u_cap <= 0.0d0) then
+         !       call abort_ice(error_message='form_func=sum_quad_cap requires u_cap>0', &
+         !                      file=__FILE__, line=__LINE__)
+         !    endif
+
+         ! case ('blend_vel')
+         !    blend_vel_switch = c1
+         !    if (u_blend <= 0.0d0) then
+         !       call abort_ice(error_message='form_func=blend_vel requires u_blend>0', &
+         !                      file=__FILE__, line=__LINE__)
+         !    endif
+         !    if (blend_exp <= 0.0d0) then
+         !       call abort_ice(error_message='form_func=blend_vel requires blend_exp>0', &
+         !                      file=__FILE__, line=__LINE__)
+         !    endif
+
+         ! case ('quad_sat')
+         !    quad_sat_switch = c1
+         !    if (u_sat <= 0.0d0) then
+         !       call abort_ice(error_message='form_func=quad_sat requires u_sat>0', &
+         !                      file=__FILE__, line=__LINE__)
+         !    endif
+
+         ! case default
+         !    call abort_ice(error_message='Unknown form_func='//trim(form_func), &
+         !                   file=__FILE__, line=__LINE__)
 
          end select
 
