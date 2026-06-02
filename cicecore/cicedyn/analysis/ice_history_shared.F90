@@ -366,6 +366,13 @@
            f_Kux  = 'x', f_Kuy  = 'x', &
            f_KuxN = 'x', f_KuyN = 'x', &
            f_KuxE = 'x', f_KuyE = 'x', &
+           f_ldphiN   = 'x', f_ldphiE   = 'x', &
+           f_ldwgtN   = 'x', f_ldwgtE   = 'x', &
+           f_ldepsN   = 'x', f_ldepsE   = 'x', &
+           f_ldspdN   = 'x', f_ldspdE   = 'x', &
+           f_ldpstatN = 'x', f_ldpstatE = 'x', &
+           f_ldpquadN = 'x', f_ldpquadE = 'x', &
+           f_ldplinN  = 'x', f_ldplinE  = 'x', &
            f_F2N  = 'x', f_F2E  = 'x'
 
       !---------------------------------------------------------------
@@ -539,9 +546,18 @@
            f_yieldstress11, &
            f_yieldstress12, &
            f_yieldstress22, &
-           f_Kux , f_Kuy, f_F2N, f_F2E , &
+           ! lateral drag
+           f_Kux , f_Kuy,  &
            f_KuxN, f_KuyN, &
-           f_KuxE, f_KuyE
+           f_KuxE, f_KuyE, &
+           f_F2N, f_F2E , &
+           f_ldphiN,   f_ldphiE, &
+           f_ldwgtN,   f_ldwgtE, &
+           f_ldepsN,   f_ldepsE, &
+           f_ldspdN,   f_ldspdE, &
+           f_ldpstatN, f_ldpstatE, &
+           f_ldpquadN, f_ldpquadE, &
+           f_ldplinN,  f_ldplinE
 
       !---------------------------------------------------------------
       ! field indices
@@ -743,10 +759,18 @@
            n_s22         , &
            n_yieldstress11, n_yieldstress12, &
            n_yieldstress22, &
+                                ! lateral drag
            n_Kux , n_Kuy , &
            n_KuxN, n_KuyN, &
            n_KuxE, n_KuyE, &
-           n_F2N , n_F2E
+           n_F2N , n_F2E, &
+           n_ldphiN,   n_ldphiE, &
+           n_ldwgtN,   n_ldwgtE, &
+           n_ldepsN,   n_ldepsE, &
+           n_ldspdN,   n_ldspdE, &
+           n_ldpstatN, n_ldpstatE, &
+           n_ldpquadN, n_ldpquadE, &
+           n_ldplinN,  n_ldplinE
 
       interface accum_hist_field ! generic interface
            module procedure accum_hist_field_2D, &

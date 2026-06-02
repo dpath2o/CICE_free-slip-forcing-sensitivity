@@ -299,11 +299,13 @@
       use ice_timers, only: timer_dynamics, timer_bound, &
           ice_timer_start, ice_timer_stop, timer_evp
       use ice_dyn_shared, only: evp_algorithm, stack_fields, unstack_fields, &
-          DminTarea, visc_method, deformations, deformationsC_T, deformationsCD_T, &
-          strain_rates_U_no_slip, strain_rates_U_free_slip, dxhy, dyhx, cxp, cyp, cxm, cym, &
-          iceTmask, iceUmask, iceEmask, iceNmask, &
-          dyn_haloUpdate, fld2, fld3, fld4, &
-          KuxU, KuyU, KuU, KuxN, KuyN, KuN, KuxE, KuyE, KuE
+           DminTarea, visc_method, deformations, deformationsC_T, deformationsCD_T, &
+           strain_rates_U_no_slip, strain_rates_U_free_slip, dxhy, dyhx, cxp, cyp, cxm, cym, &
+           iceTmask, iceUmask, iceEmask, iceNmask, &
+           dyn_haloUpdate, fld2, fld3, fld4, &
+           KuxU, KuyU, KuU, KuxN, KuyN, KuN, KuxE, KuyE, KuE, &
+           ldphiE,  ldphiN, ldwgtE, ldwgtN, ldepsE, ldepsN, ldspdE, ldspdN, &
+           ldpstatE, ldpstatN, ldpquadE, ldpquadN, ldplinE, ldplinN
       use ice_dyn_evp1d, only: dyn_evp1d_run
 
       real (kind=dbl_kind), intent(in) :: &
@@ -342,6 +344,9 @@
 
       logical (kind=log_kind) :: &
          calc_strair  ! calculate air/ice stress
+
+      ! lateral drag diagnostic write switch
+      logical (kind=log_kind) :: write_ld_diag
 
       integer (kind=int_kind), dimension (nx_block,ny_block,max_blocks) :: &
          halomask     ! generic halo mask
@@ -981,31 +986,23 @@
 
       elseif (grid_ice == "C") then
 
+         ! lateral drag form function selection
          ! defaults each timestep
          static_switch        = c0
          quad_switch          = c0
-         ! quad_cap_switch      = c0
          linear_switch        = c0
-         ! blend_vel_switch     = c0
          blend_strain_switch  = c0
-         ! quad_sat_switch      = c0
-
          ! default: cap disabled unless explicitly requested
          u_cap_eff = huge(1.0d0)
          if (u_cap > 0.0d0) u_cap_eff = u_cap
-
          select case (trim(form_func))
-
          case ('static')
             static_switch = c1
-
          case ('linear')
             linear_switch = c1
             if (C_L <= 0.0d0) C_L = Cs / max(u0, 1.0e-12_dbl_kind)
-
          case ('quad')
             quad_switch = c1
-
          case ('blend_strain')
             blend_strain_switch = c1
             if (eps_blend <= 0.0d0) then
@@ -1016,53 +1013,14 @@
                call abort_ice(error_message='form_func=blend_strain requires blend_exp>0', &
                     file=__FILE__, line=__LINE__)
             endif
-
-         ! case ('quad_cap')
-         !    quad_cap_switch = c1
-         !    if (u_cap <= 0.0d0) then
-         !       call abort_ice(error_message='form_func=quad_cap requires u_cap>0', &
-         !                      file=__FILE__, line=__LINE__)
-         !    endif
-
-         ! case ('sum')
-         !    static_switch = c1
-         !    quad_switch   = c1
-         !    linear_switch = merge(c1, c0, C_L > 0.0d0)
-
-         ! case ('sum_quad_cap')
-         !    static_switch   = c1
-         !    quad_cap_switch = c1
-         !    linear_switch   = merge(c1, c0, C_L > 0.0d0)
-         !    if (u_cap <= 0.0d0) then
-         !       call abort_ice(error_message='form_func=sum_quad_cap requires u_cap>0', &
-         !                      file=__FILE__, line=__LINE__)
-         !    endif
-
-         ! case ('blend_vel')
-         !    blend_vel_switch = c1
-         !    if (u_blend <= 0.0d0) then
-         !       call abort_ice(error_message='form_func=blend_vel requires u_blend>0', &
-         !                      file=__FILE__, line=__LINE__)
-         !    endif
-         !    if (blend_exp <= 0.0d0) then
-         !       call abort_ice(error_message='form_func=blend_vel requires blend_exp>0', &
-         !                      file=__FILE__, line=__LINE__)
-         !    endif
-
-         ! case ('quad_sat')
-         !    quad_sat_switch = c1
-         !    if (u_sat <= 0.0d0) then
-         !       call abort_ice(error_message='form_func=quad_sat requires u_sat>0', &
-         !                      file=__FILE__, line=__LINE__)
-         !    endif
-
-         ! case default
-         !    call abort_ice(error_message='Unknown form_func='//trim(form_func), &
-         !                   file=__FILE__, line=__LINE__)
-
          end select
 
          do ksub = 1,ndte        ! subcycling
+
+            ! Only write lateral-drag diagnostic arrays on the final
+            ! EVP subcycle.  The physics is still evaluated every
+            ! subcycle, but full-field diagnostic storage is not.
+            write_ld_diag = (ksub == ndte)
 
             !$OMP PARALLEL DO PRIVATE(iblk)
             do iblk = 1, nblocks
@@ -1185,47 +1143,24 @@
             !$OMP PARALLEL DO PRIVATE(iblk)
             do iblk = 1, nblocks
 
-                ! call stepu_C (nx_block            , ny_block            , & ! u, E point
-                !               icellE        (iblk), Cdn_ocnE  (:,:,iblk), &
-                !               indxEi      (:,iblk), indxEj      (:,iblk), &
-                !                                     aiE       (:,:,iblk), &
-                !               uocnE     (:,:,iblk), vocnE     (:,:,iblk), &
-                !               waterxE   (:,:,iblk), forcexE   (:,:,iblk), &
-                !               emassdti  (:,:,iblk), fmE       (:,:,iblk), &
-                !               strintxE  (:,:,iblk), taubxE    (:,:,iblk), &
-                !               uvelE_init(:,:,iblk),                       &
-                !               uvelE     (:,:,iblk), vvelE     (:,:,iblk), &
-                !               TbE       (:,:,iblk),                       &
-                !               KuxE      (:,:,iblk), KuyE      (:,:,iblk), &
-                !               KuE       (:,:,iblk))
-               call stepu_C (nx_block            , ny_block            , &
-                             icellE        (iblk), Cdn_ocnE  (:,:,iblk), &
-                             indxEi      (:,iblk), indxEj      (:,iblk), &
-                             aiE       (:,:,iblk), &
-                             uocnE     (:,:,iblk), vocnE     (:,:,iblk), &
-                             waterxE   (:,:,iblk), forcexE   (:,:,iblk), &
-                             emassdti  (:,:,iblk), fmE       (:,:,iblk), &
-                             strintxE  (:,:,iblk), taubxE    (:,:,iblk), &
-                             uvelE_init(:,:,iblk),                       &
-                             uvelE     (:,:,iblk), vvelE     (:,:,iblk), &
-                             TbE       (:,:,iblk),                       &
-                             deltaU    (:,:,iblk), uarea     (:,:,iblk), &
-                             KuxE      (:,:,iblk), KuyE      (:,:,iblk), &
-                             KuE       (:,:,iblk))
+               call stepu_C (nx_block   , ny_block            , &
+                    icellE        (iblk), Cdn_ocnE  (:,:,iblk), &
+                    indxEi      (:,iblk), indxEj      (:,iblk), &
+                    aiE       (:,:,iblk), &
+                    uocnE     (:,:,iblk), vocnE     (:,:,iblk), &
+                    waterxE   (:,:,iblk), forcexE   (:,:,iblk), &
+                    emassdti  (:,:,iblk), fmE       (:,:,iblk), &
+                    strintxE  (:,:,iblk), taubxE    (:,:,iblk), &
+                    uvelE_init(:,:,iblk),                       &
+                    uvelE     (:,:,iblk), vvelE     (:,:,iblk), &
+                    TbE       (:,:,iblk),                       &
+                    deltaU    (:,:,iblk), uarea     (:,:,iblk), &
+                    KuxE      (:,:,iblk), KuyE      (:,:,iblk), &
+                    KuE       (:,:,iblk), write_ld_diag,        &
+                    ldphiE(:,:,iblk), ldwgtE(:,:,iblk),         &
+                    ldepsE(:,:,iblk), ldspdE(:,:,iblk), &
+                    ldpstatE(:,:,iblk), ldpquadE(:,:,iblk), ldplinE(:,:,iblk))
 
-                ! call stepv_C (nx_block,             ny_block,             & ! v, N point
-                !               icellN        (iblk), Cdn_ocnN  (:,:,iblk), &
-                !               indxNi      (:,iblk), indxNj      (:,iblk), &
-                !                                     aiN       (:,:,iblk), &
-                !               uocnN     (:,:,iblk), vocnN     (:,:,iblk), &
-                !               wateryN   (:,:,iblk), forceyN   (:,:,iblk), &
-                !               nmassdti  (:,:,iblk), fmN       (:,:,iblk), &
-                !               strintyN  (:,:,iblk), taubyN    (:,:,iblk), &
-                !               vvelN_init(:,:,iblk),                       &
-                !               uvelN     (:,:,iblk), vvelN     (:,:,iblk), &
-                !               TbN       (:,:,iblk),                       &
-                !               KuxN      (:,:,iblk), KuyN      (:,:,iblk), &
-                !               KuN       (:,:,iblk))
                call stepv_C (nx_block            , ny_block            , &
                     icellN        (iblk), Cdn_ocnN  (:,:,iblk), &
                     indxNi      (:,iblk), indxNj      (:,iblk), &
@@ -1239,7 +1174,11 @@
                     TbN       (:,:,iblk),                       &
                     deltaU    (:,:,iblk), uarea     (:,:,iblk), &
                     KuxN      (:,:,iblk), KuyN      (:,:,iblk), &
-                    KuN       (:,:,iblk))
+                    KuN       (:,:,iblk), write_ld_diag,        &
+                    ldphiN(:,:,iblk), ldwgtN(:,:,iblk), &
+                    ldepsN(:,:,iblk), ldspdN(:,:,iblk), &
+                    ldpstatN(:,:,iblk), ldpquadN(:,:,iblk), ldplinN(:,:,iblk))
+
             enddo
             !$OMP END PARALLEL DO
 

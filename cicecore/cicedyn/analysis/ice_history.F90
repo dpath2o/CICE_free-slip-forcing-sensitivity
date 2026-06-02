@@ -41,10 +41,24 @@
       use icepack_intfc, only: icepack_snow_temperature, icepack_ice_temperature
       use icepack_intfc, only: icepack_query_parameters, &
           icepack_query_tracer_flags, icepack_query_tracer_indices
+      ! tides
+      use ice_domain_size, only: max_nstrm
 
       implicit none
       private
       public :: init_hist, accum_hist
+
+      ! tides
+      ! Hard-wired daily tidal-current diagnostic history indices
+      integer (kind=int_kind), dimension(max_nstrm) :: &
+           n_tide_u_eff          = 0, &
+           n_tide_v_eff          = 0, &
+           n_tide_speed_eff      = 0, &
+           n_tide_speed_daymax   = 0, &
+           n_tide_speed_dayrms   = 0, &
+           n_tide_n_subday       = 0, &
+           n_tide_n_curr_over_fi = 0, &
+           n_tide_n_capped       = 0
 
 !=======================================================================
 
@@ -86,6 +100,8 @@
 
       real (kind=dbl_kind), intent(in) :: &
          dt      ! time step
+      ! tides
+      character(len=max_nstrm) :: f_tide_diag
 
       ! local variables
 
@@ -462,6 +478,11 @@
          f_F2N    = f_F2N
       endif
 
+      ! tides
+      f_tide_diag = 'x'
+      f_tide_diag(1:1) = 'h'
+      f_tide_diag(2:2) = 'd'
+
       call broadcast_scalar (f_tlon, master_task)
       call broadcast_scalar (f_tlat, master_task)
       call broadcast_scalar (f_ulon, master_task)
@@ -618,6 +639,26 @@
       call broadcast_scalar (f_strintyE, master_task)
       call broadcast_scalar (f_taubxE, master_task)
       call broadcast_scalar (f_taubyE, master_task)
+      call broadcast_scalar (f_KuxN, master_task)
+      call broadcast_scalar (f_KuyN, master_task)
+      call broadcast_scalar (f_KuxE, master_task)
+      call broadcast_scalar (f_KuyE, master_task)
+      call broadcast_scalar (f_F2N, master_task)
+      call broadcast_scalar (f_F2E, master_task)
+      call broadcast_scalar (f_ldphiN,   master_task)
+      call broadcast_scalar (f_ldphiE,   master_task)
+      call broadcast_scalar (f_ldwgtN,   master_task)
+      call broadcast_scalar (f_ldwgtE,   master_task)
+      call broadcast_scalar (f_ldepsN,   master_task)
+      call broadcast_scalar (f_ldepsE,   master_task)
+      call broadcast_scalar (f_ldspdN,   master_task)
+      call broadcast_scalar (f_ldspdE,   master_task)
+      call broadcast_scalar (f_ldpstatN, master_task)
+      call broadcast_scalar (f_ldpstatE, master_task)
+      call broadcast_scalar (f_ldpquadN, master_task)
+      call broadcast_scalar (f_ldpquadE, master_task)
+      call broadcast_scalar (f_ldplinN,  master_task)
+      call broadcast_scalar (f_ldplinE,  master_task)
       call broadcast_scalar (f_strength, master_task)
       call broadcast_scalar (f_divu, master_task)
       call broadcast_scalar (f_shear, master_task)
@@ -698,13 +739,6 @@
       call broadcast_scalar (f_sistreave, master_task)
       call broadcast_scalar (f_sistremax, master_task)
       call broadcast_scalar (f_sirdgthick, master_task)
-      call broadcast_scalar (f_KuxN, master_task)
-      call broadcast_scalar (f_KuyN, master_task)
-      call broadcast_scalar (f_KuxE, master_task)
-      call broadcast_scalar (f_KuyE, master_task)
-      call broadcast_scalar (f_F2N, master_task)
-      call broadcast_scalar (f_F2E, master_task)
-
       call broadcast_scalar (f_aicen, master_task)
       call broadcast_scalar (f_vicen, master_task)
       call broadcast_scalar (f_vsnon, master_task)
@@ -750,6 +784,47 @@
 !            "ice volume per unit grid cell area", c1, c0,            &
 !            ns1, f_example)
 !!!!! end example
+
+         ! tides
+      if (f_tide_diag(1:1) /= 'x') &
+         call define_hist_field(n_tide_u_eff,"tide_u_eff","m/s",tstr2D, tcstr, &
+            "applied tidal u-current perturbation", &
+            "after depth limiter, ramp and cap", c1, c0, ns1, f_tide_diag)
+
+      if (f_tide_diag(1:1) /= 'x') &
+         call define_hist_field(n_tide_v_eff,"tide_v_eff","m/s",tstr2D, tcstr, &
+            "applied tidal v-current perturbation", &
+            "after depth limiter, ramp and cap", c1, c0, ns1, f_tide_diag)
+
+      if (f_tide_diag(1:1) /= 'x') &
+         call define_hist_field(n_tide_speed_eff,"tide_spd","m/s",tstr2D, tcstr, &
+            "applied tidal-current speed", &
+            "after depth limiter, ramp and cap", c1, c0, ns1, f_tide_diag)
+
+      if (f_tide_diag(1:1) /= 'x') &
+         call define_hist_field(n_tide_speed_daymax,"tide_spd_max","m/s",tstr2D, tcstr, &
+            "daily maximum tidal-current speed", &
+            "sub-daily max of applied tidal-current perturbation", c1, c0, ns1, f_tide_diag)
+
+      if (f_tide_diag(1:1) /= 'x') &
+         call define_hist_field(n_tide_speed_dayrms,"tide_spd_rms","m/s",tstr2D, tcstr, &
+            "daily RMS tidal-current speed", &
+            "sub-daily RMS of applied tidal-current perturbation", c1, c0, ns1, f_tide_diag)
+
+      if (f_tide_diag(1:1) /= 'x') &
+         call define_hist_field(n_tide_n_subday,"tide_n_sub","1",tstr2D, tcstr, &
+            "number of tide diagnostic samples", &
+            "sub-daily sample count accumulated during current day", c1, c0, ns1, f_tide_diag)
+
+      if (f_tide_diag(1:1) /= 'x') &
+         call define_hist_field(n_tide_n_curr_over_fi,"tide_n_over","1",tstr2D, tcstr, &
+            "number of samples exceeding FI speed threshold", &
+            "count where applied tide speed exceeds tide_curr_diag_thresh", c1, c0, ns1, f_tide_diag)
+
+      if (f_tide_diag(1:1) /= 'x') &
+         call define_hist_field(n_tide_n_capped,"tide_n_cap","1",tstr2D, tcstr, &
+            "number of samples limited by tide speed cap", &
+            "count where tide_speed_cap modified applied current", c1, c0, ns1, f_tide_diag)
 
          call define_hist_field(n_hi,"hi","m",tstr2D, tcstr,        &
             "grid cell mean ice thickness",                       &
@@ -1357,7 +1432,7 @@
              "vort is instantaneous, on T grid", secday*c100, c0,                                &
              ns1, f_vort)
 
-        ! coastal drag 
+        ! lateral drag
         call define_hist_field(n_KuxN,"KuxN","N/m^2",nstr2D, ncstr, &
             "coastal (lateral) drag stress (x)", &
             "positive is x direction on N grid", c1, c0, ns1, f_KuxN)
@@ -1381,6 +1456,62 @@
         call define_hist_field(n_F2E, "F2E", "-", estr2D, ecstr, &
             "coastal drag form factor (unitless)", &
             "static; E-face on C-grid", c1, c0, ns1, f_F2E)
+
+        call define_hist_field(n_ldphiN,"ldphiN","1/s",nstr2D, ncstr, &
+            "lateral-drag damping rate", &
+            "realised phi used in tau_LD = -Ku*phi*u; N grid", c1, c0, ns1, f_ldphiN)
+
+        call define_hist_field(n_ldphiE,"ldphiE","1/s",estr2D, ecstr, &
+            "lateral-drag damping rate", &
+            "realised phi used in tau_LD = -Ku*phi*u; E grid", c1, c0, ns1, f_ldphiE)
+
+        call define_hist_field(n_ldwgtN,"ldwgtN","1",nstr2D, ncstr, &
+            "lateral-drag locking weight", &
+            "static-branch weight; 1=static, 0=mobile; N grid", c1, c0, ns1, f_ldwgtN)
+
+        call define_hist_field(n_ldwgtE,"ldwgtE","1",estr2D, ecstr, &
+            "lateral-drag locking weight", &
+            "static-branch weight; 1=static, 0=mobile; E grid", c1, c0, ns1, f_ldwgtE)
+
+        call define_hist_field(n_ldepsN,"ldepsN","1/s",nstr2D, ncstr, &
+            "blend effective strain rate", &
+            "strain-rate invariant used by blend_strain; N grid", c1, c0, ns1, f_ldepsN)
+
+        call define_hist_field(n_ldepsE,"ldepsE","1/s",estr2D, ecstr, &
+            "blend effective strain rate", &
+            "strain-rate invariant used by blend_strain; E grid", c1, c0, ns1, f_ldepsE)
+
+        call define_hist_field(n_ldspdN,"ldspdN","m/s",nstr2D, ncstr, &
+            "lateral-drag speed", &
+            "speed used by lateral-drag form function; N grid", c1, c0, ns1, f_ldspdN)
+
+        call define_hist_field(n_ldspdE,"ldspdE","m/s",estr2D, ecstr, &
+            "lateral-drag speed", &
+            "speed used by lateral-drag form function; E grid", c1, c0, ns1, f_ldspdE)
+
+        call define_hist_field(n_ldpstatN,"ldpstatN","1/s",nstr2D, ncstr, &
+            "static branch damping rate", &
+            "diagnostic Cs/(|u|+u0); N grid", c1, c0, ns1, f_ldpstatN)
+
+        call define_hist_field(n_ldpstatE,"ldpstatE","1/s",estr2D, ecstr, &
+            "static branch damping rate", &
+            "diagnostic Cs/(|u|+u0); E grid", c1, c0, ns1, f_ldpstatE)
+
+        call define_hist_field(n_ldpquadN,"ldpquadN","1/s",nstr2D, ncstr, &
+            "quadratic branch damping rate", &
+            "diagnostic Cq*|u|; N grid", c1, c0, ns1, f_ldpquadN)
+
+        call define_hist_field(n_ldpquadE,"ldpquadE","1/s",estr2D, ecstr, &
+            "quadratic branch damping rate", &
+            "diagnostic Cq*|u|; E grid", c1, c0, ns1, f_ldpquadE)
+
+        call define_hist_field(n_ldplinN,"ldplinN","1/s",nstr2D, ncstr, &
+            "linear branch damping rate", &
+            "diagnostic C_L; N grid", c1, c0, ns1, f_ldplinN)
+
+        call define_hist_field(n_ldplinE,"ldplinE","1/s",estr2D, ecstr, &
+            "linear branch damping rate", &
+            "diagnostic C_L; E grid", c1, c0, ns1, f_ldplinE)
 
          select case (grid_ice)
          case('B')
@@ -2199,7 +2330,11 @@
                               new_month
       use ice_dyn_eap, only: a11, a12, e11, e12, e22, s11, s12, s22, &
           yieldstress11, yieldstress12, yieldstress22
-      use ice_dyn_shared, only: kdyn, principal_stress, KuxN, KuyN, KuxE, KuyE, KuxU, KuyU, KuN, KuE, KuU
+      use ice_dyn_shared, only: kdyn, principal_stress, &
+           KuxN, KuyN, KuxE, KuyE, KuxU, KuyU, KuN, KuE, KuU, &
+           ldphiN, ldphiE, ldwgtN, ldwgtE, ldepsN, ldepsE, &
+           ldspdN, ldspdE, ldpstatN, ldpstatE, ldpquadN, ldpquadE, &
+           ldplinN, ldplinE
       use ice_flux, only: fsw, flw, fsnow, frain, sst, sss, uocn, vocn, &
           frzmlt_init, scale_factor, fswabs, fswthru, alvdr, alvdf, alidr, alidf, &
           albice, albsno, albpnd, coszen, flat, fsens, flwout, evap, evaps, evapi, &
@@ -2234,6 +2369,11 @@
       use ice_history_fsd, only: accum_hist_fsd
       use ice_state ! almost everything
       use ice_timers, only: ice_timer_start, ice_timer_stop, timer_readwrite
+      ! tides
+      use ice_forcing, only: &
+           tide_u_eff, tide_v_eff, tide_speed_eff, &
+           tide_speed_daymax, tide_speed_dayrms, &
+           tide_n_subday, tide_n_curr_over_fi, tide_n_capped
 
       real (kind=dbl_kind), intent(in) :: &
          dt      ! time step
@@ -2381,6 +2521,13 @@
          if (allocated(a2D)) then
 
          workb(:,:) = aice_init(:,:,iblk)
+
+         ! tides
+         if (allocated(tide_speed_eff)) then
+            call accum_hist_field(n_tide_u_eff,     iblk, tide_u_eff(:,:,iblk),     a2D)
+            call accum_hist_field(n_tide_v_eff,     iblk, tide_v_eff(:,:,iblk),     a2D)
+            call accum_hist_field(n_tide_speed_eff, iblk, tide_speed_eff(:,:,iblk), a2D)
+         endif
 
 !        if (f_example(1:1) /= 'x') &
 !            call accum_hist_field(n_example,iblk, vice(:,:,iblk), a2D)
@@ -2707,6 +2854,7 @@
          if (f_strength(1:1)/= 'x') &
              call accum_hist_field(n_strength,iblk, strength(:,:,iblk), a2D)
 
+         ! lateral drag
          if (f_KuxN(1:1) /= 'x') &
              call accum_hist_field(n_KuxN, iblk, KuxN(:,:,iblk), a2D)
          if (f_KuyN(1:1) /= 'x') &
@@ -2719,6 +2867,34 @@
              call accum_hist_field(n_F2N, iblk, F2N(:,:,iblk), a2D)
          if (f_F2E(1:1) /= 'x') &
              call accum_hist_field(n_F2E, iblk, F2E(:,:,iblk), a2D)
+         if (f_ldphiN(1:1) /= 'x') &
+             call accum_hist_field(n_ldphiN, iblk, ldphiN(:,:,iblk), a2D)
+         if (f_ldphiE(1:1) /= 'x') &
+             call accum_hist_field(n_ldphiE, iblk, ldphiE(:,:,iblk), a2D)
+         if (f_ldwgtN(1:1) /= 'x') &
+             call accum_hist_field(n_ldwgtN, iblk, ldwgtN(:,:,iblk), a2D)
+         if (f_ldwgtE(1:1) /= 'x') &
+             call accum_hist_field(n_ldwgtE, iblk, ldwgtE(:,:,iblk), a2D)
+         if (f_ldepsN(1:1) /= 'x') &
+             call accum_hist_field(n_ldepsN, iblk, ldepsN(:,:,iblk), a2D)
+         if (f_ldepsE(1:1) /= 'x') &
+             call accum_hist_field(n_ldepsE, iblk, ldepsE(:,:,iblk), a2D)
+         if (f_ldspdN(1:1) /= 'x') &
+             call accum_hist_field(n_ldspdN, iblk, ldspdN(:,:,iblk), a2D)
+         if (f_ldspdE(1:1) /= 'x') &
+             call accum_hist_field(n_ldspdE, iblk, ldspdE(:,:,iblk), a2D)
+         if (f_ldpstatN(1:1) /= 'x') &
+             call accum_hist_field(n_ldpstatN, iblk, ldpstatN(:,:,iblk), a2D)
+         if (f_ldpstatE(1:1) /= 'x') &
+             call accum_hist_field(n_ldpstatE, iblk, ldpstatE(:,:,iblk), a2D)
+         if (f_ldpquadN(1:1) /= 'x') &
+             call accum_hist_field(n_ldpquadN, iblk, ldpquadN(:,:,iblk), a2D)
+         if (f_ldpquadE(1:1) /= 'x') &
+             call accum_hist_field(n_ldpquadE, iblk, ldpquadE(:,:,iblk), a2D)
+         if (f_ldplinN(1:1) /= 'x') &
+             call accum_hist_field(n_ldplinN, iblk, ldplinN(:,:,iblk), a2D)
+         if (f_ldplinE(1:1) /= 'x') &
+             call accum_hist_field(n_ldplinE, iblk, ldplinE(:,:,iblk), a2D)
 
 ! The following fields (divu, shear, vort, sig1, and sig2) will be smeared
 !  if averaged over more than a few days.
@@ -4105,6 +4281,12 @@
                  if (n_yieldstress11 (ns) /= 0) a2D(i,j,n_yieldstress11(ns),iblk) = spval_dbl
                  if (n_yieldstress12 (ns) /= 0) a2D(i,j,n_yieldstress12(ns),iblk) = spval_dbl
                  if (n_yieldstress22 (ns) /= 0) a2D(i,j,n_yieldstress22(ns),iblk) = spval_dbl
+                 ! tides
+                 if (n_tide_speed_daymax  (ns) /= 0) a2D(i,j,n_tide_speed_daymax(ns),  iblk) = spval_dbl
+                 if (n_tide_speed_dayrms  (ns) /= 0) a2D(i,j,n_tide_speed_dayrms(ns),  iblk) = spval_dbl
+                 if (n_tide_n_subday      (ns) /= 0) a2D(i,j,n_tide_n_subday(ns),      iblk) = spval_dbl
+                 if (n_tide_n_curr_over_fi(ns) /= 0) a2D(i,j,n_tide_n_curr_over_fi(ns),iblk) = spval_dbl
+                 if (n_tide_n_capped      (ns) /= 0) a2D(i,j,n_tide_n_capped(ns),      iblk) = spval_dbl
               else
                  if (n_divu     (ns) /= 0) a2D(i,j,n_divu(ns),iblk)      = &
                        divu (i,j,iblk)*avail_hist_fields(n_divu(ns))%cona
@@ -4169,6 +4351,35 @@
                        yieldstress12 (i,j,iblk)*avail_hist_fields(n_yieldstress12(ns))%cona
                  if (n_yieldstress22     (ns) /= 0) a2D(i,j,n_yieldstress22(ns),iblk)      = &
                        yieldstress22 (i,j,iblk)*avail_hist_fields(n_yieldstress22(ns))%cona
+                 ! tides
+                 if (n_tide_speed_daymax  (ns) /= 0) a2D(i,j,n_tide_speed_daymax(ns),  iblk) = spval_dbl
+                 if (n_tide_speed_dayrms  (ns) /= 0) a2D(i,j,n_tide_speed_dayrms(ns),  iblk) = spval_dbl
+                 if (n_tide_n_subday      (ns) /= 0) a2D(i,j,n_tide_n_subday(ns),      iblk) = spval_dbl
+                 if (n_tide_n_curr_over_fi(ns) /= 0) a2D(i,j,n_tide_n_curr_over_fi(ns),iblk) = spval_dbl
+                 if (n_tide_n_capped      (ns) /= 0) a2D(i,j,n_tide_n_capped(ns),      iblk) = spval_dbl
+                 if (allocated(tide_speed_eff)) then
+                    if (n_tide_speed_daymax(ns) /= 0) &
+                       a2D(i,j,n_tide_speed_daymax(ns),iblk) = tide_speed_daymax(i,j,iblk)
+                    if (n_tide_speed_dayrms(ns) /= 0) &
+                       a2D(i,j,n_tide_speed_dayrms(ns),iblk) = tide_speed_dayrms(i,j,iblk)
+                    if (n_tide_n_subday(ns) /= 0) &
+                       a2D(i,j,n_tide_n_subday(ns),iblk) = tide_n_subday(i,j,iblk)
+                    if (n_tide_n_curr_over_fi(ns) /= 0) &
+                       a2D(i,j,n_tide_n_curr_over_fi(ns),iblk) = tide_n_curr_over_fi(i,j,iblk)
+                    if (n_tide_n_capped(ns) /= 0) &
+                       a2D(i,j,n_tide_n_capped(ns),iblk) = tide_n_capped(i,j,iblk)
+                 else
+                    if (n_tide_speed_daymax(ns) /= 0) &
+                       a2D(i,j,n_tide_speed_daymax(ns),iblk) = spval_dbl
+                    if (n_tide_speed_dayrms(ns) /= 0) &
+                       a2D(i,j,n_tide_speed_dayrms(ns),iblk) = spval_dbl
+                    if (n_tide_n_subday(ns) /= 0) &
+                       a2D(i,j,n_tide_n_subday(ns),iblk) = spval_dbl
+                    if (n_tide_n_curr_over_fi(ns) /= 0) &
+                       a2D(i,j,n_tide_n_curr_over_fi(ns),iblk) = spval_dbl
+                    if (n_tide_n_capped(ns) /= 0) &
+                       a2D(i,j,n_tide_n_capped(ns),iblk) = spval_dbl
+                 endif
               endif
            enddo                ! i
            enddo                ! j
