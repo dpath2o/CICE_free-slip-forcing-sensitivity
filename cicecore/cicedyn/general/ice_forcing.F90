@@ -139,8 +139,10 @@ module ice_forcing
        bgc_data_type,    & ! 'default', 'clim'
        ocn_data_type,    & ! 'default', 'clim', 'ncar', 'oned', 'calm', 'box2001', 'hadgem_sst' or 'hadgem_sst_uvocn', 'uniform', 'AFIM'
        era5_mod_var,     & ! <--------- ONLY VALID IN ERA5_data --------->
+                           !    'none'
+                           !    'ttlpcp_ant_coast' or 'precip_ant_coast'
+                           !    Future options may include:
                            !    'u','v','wspd','tair','qair','sw','lw'
-                           !    DEFAULT: ''; blank string, which means no modification
        tide_data_type,   & ! 'none' or 'harmonic'
        tide_data_format, & ! 'none' or 'CICE_TMD3'
        ice_data_type,    & ! 'latsst', 'box2001', 'boxslotcyl', etc
@@ -2582,22 +2584,136 @@ end subroutine compute_tides_at_time
   end subroutine JRA55_data
 
   !=======================================================================
+  !=======================================================================
+  ! ERA5: subroutines to read and manipulate ERA5 forcing data.
+  !
+  ! ERA5 forcing is preprocessed offline from native ERA5 single-level
+  ! reanalysis fields on Gadi to the CICE T grid. The preprocessing uses
+  ! xESMF patch regridding with nearest-source-to-destination extrapolation
+  ! and precomputed ESMF weights. Monthly regridded files are concatenated
+  ! into yearly files named:
+  !
+  !    era5_for_cice6_YYYY.nc
+  !
+  ! The offline ERA5-to-CICE variable mapping is:
+  !
+  !    ERA5 2t       -> airtmp   (2-m air temperature, K)
+  !    ERA5 msdwlwrf -> dlwsfc   (downward longwave flux, W/m^2)
+  !    ERA5 msdwswrf -> glbrad   (downward shortwave flux, W/m^2)
+  !    ERA5 mtpr     -> ttlpcp   (total precipitation rate, kg/m^2/s)
+  !    ERA5 10u      -> wndewd   (eastward 10-m wind, m/s)
+  !    ERA5 10v      -> wndnwd   (northward 10-m wind, m/s)
+  !    ERA5 2d + sp  -> spchmd   (specific humidity, kg/kg)
+  !
+  ! Specific humidity is computed offline from 2-m dewpoint temperature
+  ! and surface pressure using
+  !
+  !    E = a1 * exp(a3 * (d2m - T0) / (d2m - a4))
+  !    q = (Rdry/Rvap) * E / (sp - (1 - Rdry/Rvap) * E)
+  !
+  ! where
+  !
+  !    Rdry = 287.0597 J kg^-1 K^-1
+  !    Rvap = 461.5250 J kg^-1 K^-1
+  !    a1   = 611.21 Pa
+  !    a3   = 17.502
+  !    a4   = 32.19 K
+  !    T0   = 273.16 K
+  !
+  ! Within CICE, states are treated as instantaneous fields:
+  !
+  !    airtmp, wndewd, wndnwd, spchmd
+  !
+  ! Fluxes are treated as hourly averages:
+  !
+  !    glbrad, dlwsfc, ttlpcp
+  !
+  ! The first state record is YYYY-01-01-00:00Z. The first flux record
+  ! represents the hourly average over YYYY-12-31-23:00Z to
+  ! YYYY-01-01-00:00Z. State fields are interpolated in time; flux fields
+  ! are not interpolated and are applied as record values.
+  !
+  ! File is NetCDF with winds in geographic east/north directions. Wind
+  ! rotation to the model grid is handled later in the forcing workflow.
+  !
+  ! Forcing terms currently consist of:
+  !
+  !    glbrad   (shortwave W/m^2), 1 hr average
+  !    dlwsfc   (longwave W/m^2), 1 hr average
+  !    wndewd   (eastward wind m/s), instantaneous
+  !    wndnwd   (northward wind m/s), instantaneous
+  !    airtmp   (air temperature K), instantaneous
+  !    spchmd   (specific humidity kg/kg), instantaneous
+  !    ttlpcp   (precipitation kg/m^2/s), 1 hr average
+  !
+  !=======================================================================
+  !=======================================================================
+  subroutine scale_era5_ant_coastal_precip(precip)
+    ! Scale ERA5 total precipitation over Antarctic coastal ocean cells.
+    !
+    ! This is an intentionally simple forcing-sensitivity perturbation:
+    !   - applies only when era5_mod_var selects Antarctic coastal precip
+    !   - uses ocean cells adjacent to land
+    !   - restricts to Southern Ocean / Antarctic latitudes
+    !   - applies multiplicative era5_mod_fac
+    !
+    ! precip is the ERA5 ttlpcp field already copied into CICE fsnow,
+    ! before CICE partitions precip into rain/snow.
+    use ice_domain, only : nblocks
+    use ice_grid,   only : hm, TLAT
+    real(kind=dbl_kind), dimension(nx_block,ny_block,max_blocks), intent(inout) :: precip
+    integer(kind=int_kind) :: i, j, iblk
+    real(kind=dbl_kind)    :: pi, lat_cutoff
+    character(len=*), parameter :: subname = '(scale_era5_ant_coastal_precip)'
+    pi = c4 * atan(c1)
+    ! TLAT is stored in radians. Use -50 deg as a deliberately blunt
+    ! Southern Ocean / Antarctic coastal mask for this sensitivity test.
+    lat_cutoff = -50.0_dbl_kind * pi / c180
+    if (debug_forcing .or. local_debug) then
+       if (my_task == master_task) then
+          write(nu_diag,*) subname, ' applying era5_mod_fac = ', era5_mod_fac
+          write(nu_diag,*) subname, ' lat_cutoff_deg      = ', -50.0_dbl_kind
+       endif
+    endif
+    !$OMP PARALLEL DO PRIVATE(iblk,j,i)
+    do iblk = 1, nblocks
+       do j = 1, ny_block
+          do i = 1, nx_block
+             if (is_ant_coastal_ocean_cell(i,j,iblk,lat_cutoff)) then
+                precip(i,j,iblk) = era5_mod_fac * precip(i,j,iblk)
+             endif
+          enddo
+       enddo
+    enddo
+    !$OMP END PARALLEL DO
+  end subroutine scale_era5_ant_coastal_precip
+
+  !=======================================================================
+  logical(kind=log_kind) function is_ant_coastal_ocean_cell(i, j, iblk, lat_cutoff)
+    ! Crude Antarctic coastal-ocean selector.
+    !
+    ! A cell is selected if:
+    !   1. it is ocean on the T grid,
+    !   2. it is south of lat_cutoff,
+    !   3. one of its four direct T-grid neighbours is land/boundary.
+    use ice_grid, only : hm, TLAT
+    integer(kind=int_kind), intent(in) :: i, j, iblk
+    real(kind=dbl_kind),    intent(in) :: lat_cutoff
+    logical(kind=log_kind) :: ocean_cell
+    logical(kind=log_kind) :: adjacent_land
+    ocean_cell    = hm(i,j,iblk) > p5
+    adjacent_land = .false.
+    if (i > 1       ) adjacent_land = adjacent_land .or. hm(i-1,j,iblk) <= p5
+    if (i < nx_block) adjacent_land = adjacent_land .or. hm(i+1,j,iblk) <= p5
+    if (j > 1       ) adjacent_land = adjacent_land .or. hm(i,j-1,iblk) <= p5
+    if (j < ny_block) adjacent_land = adjacent_land .or. hm(i,j+1,iblk) <= p5
+    is_ant_coastal_ocean_cell = ocean_cell .and. adjacent_land .and. TLAT(i,j,iblk) <= lat_cutoff
+  end function is_ant_coastal_ocean_cell
+
+  !=======================================================================
   subroutine ERA5_data
     ! This code is built off the back of the JRA55_data subroutine (above).
-    ! It assumes hourly ERA5 data stored in yearly files as follows:
-    !
-    ! states are instantaneous, 1st record is YYYY-01-01-00:00Z
-    ! fluxes are hourly averages, 1st record is YYYY-12-31-23:00Z to [+1]YYYY-01-01-OOZ
-    ! interpolate states, do not interpolate fluxes
-    !
-    ! File is NETCDF with winds in NORTH and EAST direction, and file variable names are:
-    ! glbrad   (shortwave W/m^2), 1 hr average
-    ! dlwsfc   (longwave W/m^2), 1 hr average
-    ! wndewd   (eastward wind m/s), instantaneous
-    ! wndnwd   (northward wind m/s), instantaneous
-    ! airtmp   (air temperature K), instantaneous
-    ! spchmd   (specific humidity kg/kg), instantaneous
-    ! ttlpcp   (precipitation kg/m s-1), 1 hr average
+    ! It assumes hourly ERA5 data stored in yearly files as follows. 
     !
     ! Author: DP@H2O, University of Tasmania
     !
@@ -2605,7 +2721,7 @@ end subroutine compute_tides_at_time
     use ice_global_reductions, only : global_minval, global_maxval
     use ice_domain, only            : nblocks, distrb_info
     use ice_flux, only              : fsnow, Tair, uatm, vatm, Qa, fsw, flw
-    use ice_grid, only              : hm, tmask, umask
+    use ice_grid, only              : hm, tmask, umask, TLAT
     use ice_state, only             : aice
     use ice_calendar, only          : days_per_year, use_leap_years, mday, mmonth, myear, isleap
     integer (kind=int_kind)       :: ncid             , & ! netcdf file id
@@ -2697,6 +2813,9 @@ end subroutine compute_tides_at_time
     fsw  (:,:,:) = fsw_data  (:,:,1,:)
     flw  (:,:,:) = flw_data  (:,:,1,:)
     fsnow(:,:,:) = fsnow_data(:,:,1,:)
+    if (trim(era5_mod_var) == 'ttlpcp_ant_coast' .or. trim(era5_mod_var) == 'precip_ant_coast') then
+       call scale_era5_ant_coastal_precip(fsnow)
+    endif
     !$OMP PARALLEL DO PRIVATE(iblk,i,j)
     do iblk = 1, nblocks
        ! limit summer Tair values where ice is present
