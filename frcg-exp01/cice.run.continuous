@@ -1,5 +1,5 @@
 #!/bin/csh -f
-#PBS -N free-slip-tides-cice-year
+#PBS -N frcg-exp01
 #PBS -P gv90
 #PBS -q normalbw
 #PBS -l walltime=10:00:00

@@ -95,12 +95,11 @@
       use ice_flux_bgc, only: cpl_bgc
       use ice_forcing, only: &
            ycycle,          fyear_init,       debug_forcing,                                       &
-           ! atm_data_type,   atm_data_dir,     precip_units,     rotate_wind,                       &
-           ! atm_data_format, ocn_data_format,  atm_data_version,                                    &
            atm_data_type,   atm_data_dir,     precip_units,     rotate_wind,                       &
            atm_data_format, ocn_data_format,  atm_data_version,                                    &
            era5_mod_var,    era5_mod_fac,                                                          &
            bgc_data_type,   ocn_data_type,    ocn_data_dir,     wave_spec_file,                    &
+           ! tides
            tide_data_type,  tide_data_format, tide_data_file,   tide_use_currents, tide_use_ssh,   &
            tide_use_bathymetry_limit, tide_curr_fac, tide_speed_cap, tide_wct_min, tide_wct_full,    &
            tide_h_eff_min, tide_depth_mismatch, tide_ramp_days,                                      &
@@ -297,7 +296,6 @@
            fbot_xfer_type, update_ocn_f,    l_mpond_fresh, tfrz_option,    &
            saltflux_option,ice_ref_salinity,cpl_frazil,    congel_freeze,  &
            oceanmixed_ice, restore_ice,     restore_ocn,   trestore,       &
-           ! precip_units,   default_season,  wave_spec_type,nfreq,          &
            precip_units,   era5_mod_var,    era5_mod_fac,                  &
            default_season,  wave_spec_type,  nfreq,                         &
            ! TIDES
@@ -2811,7 +2809,7 @@
             write(nu_diag,1031) ' atm_data_dir     = ', trim(atm_data_dir)
             write(nu_diag,1031) ' precip_units     = ', trim(precip_units)
             write(nu_diag,1031) ' era5_mod_var     = ', trim(era5_mod_var)
-            write(nu_diag,1031) ' era5_mod_fac     = ', trim(era5_mod_fac)
+            write(nu_diag,1003) ' era5_mod_fac     = ', era5_mod_fac
          elseif (trim(atm_data_type) == 'default') then
             write(nu_diag,1031) ' default_season   = ', trim(default_season)
          endif

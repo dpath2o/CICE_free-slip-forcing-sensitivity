@@ -1,13 +1,13 @@
 #!/bin/csh -f
 
-setenv ICE_CASENAME  free-slip-tides
-setenv ICE_SANDBOX  /home/581/da1339/AFIM/src/CICE_free-slip-tides
+setenv ICE_CASENAME  frcg-exp01
+setenv ICE_SANDBOX  /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity
 setenv ICE_MACHINE  gadi1
 setenv ICE_ENVNAME  intel
 setenv ICE_MACHCOMP  gadi1_intel
-setenv ICE_SCRIPTS  /home/581/da1339/AFIM/src/CICE_free-slip-tides/configuration/scripts
-setenv ICE_CASEDIR  /home/581/da1339/AFIM/src/CICE_free-slip-tides/free-slip-tides
-setenv ICE_RUNDIR  /g/data/gv90/da1339/cice-dirs/runs/free-slip-tides
+setenv ICE_SCRIPTS  /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/configuration/scripts
+setenv ICE_CASEDIR  /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp01
+setenv ICE_RUNDIR  /g/data/gv90/da1339/cice-dirs/runs/frcg-exp01
 setenv ICE_OBJDIR     ${ICE_RUNDIR}/compile
 setenv ICE_RSTDIR     ${ICE_RUNDIR}/restart
 setenv ICE_HSTDIR     ${ICE_RUNDIR}/history

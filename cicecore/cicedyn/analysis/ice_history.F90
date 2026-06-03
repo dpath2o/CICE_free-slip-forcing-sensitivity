@@ -80,7 +80,8 @@
       use ice_broadcast, only: broadcast_scalar, broadcast_array
       use ice_calendar, only: yday, days_per_year, histfreq, &
           histfreq_n, nstreams
-      use ice_domain_size, only: max_blocks, max_nstrm, nilyr, nslyr, nblyr, ncat, nfsd
+      use ice_domain_size, only: max_blocks, nilyr, nslyr, nblyr, ncat, nfsd ! tides: max_nstrm,
+      ! use ice_domain_size, only: max_blocks, max_nstrm, nilyr, nslyr, nblyr, ncat, nfsd 
       use ice_dyn_shared, only: kdyn
       use ice_flux, only: mlt_onset, frz_onset, albcnt, snwcnt
       use ice_grid, only: grid_ice, grid_outfile, &
