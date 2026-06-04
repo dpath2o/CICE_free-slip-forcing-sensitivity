@@ -3211,6 +3211,20 @@ contains
   end function is_ant_coastal_ocean_cell
 
   !=======================================================================
+  subroutine ERA5_debug_minmax(label, field)
+    use ice_global_reductions, only : global_minval, global_maxval
+    use ice_domain, only            : distrb_info
+    use ice_grid, only              : tmask
+    character(len=*), intent(in) :: label
+    real(kind=dbl_kind), dimension(nx_block,ny_block,max_blocks), intent(in) :: field
+    real(kind=dbl_kind) :: vmin, vmax
+    if (debug_forcing .or. local_debug) then
+       vmin = global_minval(field, distrb_info, tmask)
+       vmax = global_maxval(field, distrb_info, tmask)
+       if (my_task == master_task) write(nu_diag,*) '(ERA5_debug_minmax) ', trim(label), vmin, vmax
+    endif
+  end subroutine ERA5_debug_minmax
+
   !=======================================================================
   subroutine ERA5_data
     ! Reads monthly hourly ERA5 forcing files on the CICE T grid.
@@ -3320,10 +3334,10 @@ contains
            rec_to_read /= frec_info(3,n1)) then
 
           ! If slot 1 now equals last step's slot 2, copy instead of reread.
-          if (n1 == 1 .and. &
-              lfyear == frec_info(1,2) .and. &
-              lmonth == frec_info(2,2) .and. &
-              rec_to_read == frec_info(3,2)) then
+          if (.false.) then ! n1 == 1 .and. &
+              ! lfyear == frec_info(1,2) .and. &
+              ! lmonth == frec_info(2,2) .and. &
+              ! rec_to_read == frec_info(3,2)) then
 
              Tair_data    (:,:,1,:) = Tair_data    (:,:,2,:)
              uatm_data    (:,:,1,:) = uatm_data    (:,:,2,:)
@@ -3344,41 +3358,60 @@ contains
 
              ! Required variables: abort if missing.
              fieldname = 'airtmp'
-             call ice_read_nc(ncid, rec_to_read, fieldname, Tair_data(:,:,n1,:), &
-                  local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ice_read_nc(ncid, rec_to_read, fieldname, Tair_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw airtmp', Tair_data(:,:,n1,:))
 
              fieldname = 'wndewd'
-             call ice_read_nc(ncid, rec_to_read, fieldname, uatm_data(:,:,n1,:), &
-                  local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ice_read_nc(ncid, rec_to_read, fieldname, uatm_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw eastward wind', uatm_data(:,:,n1,:))
 
              fieldname = 'wndnwd'
-             call ice_read_nc(ncid, rec_to_read, fieldname, vatm_data(:,:,n1,:), &
-                  local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ice_read_nc(ncid, rec_to_read, fieldname, vatm_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw northward wind', vatm_data(:,:,n1,:))
 
              fieldname = 'spchmd'
-             call ice_read_nc(ncid, rec_to_read, fieldname, Qa_data(:,:,n1,:), &
-                  local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ice_read_nc(ncid, rec_to_read, fieldname, Qa_data(:,:,n1,:)  , local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw specific humidity', Qa_data(:,:,n1,:))
 
              fieldname = 'glbrad'
-             call ice_read_nc(ncid, rec_to_read, fieldname, fsw_data(:,:,n1,:), &
-                  local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ice_read_nc(ncid, rec_to_read, fieldname, fsw_data(:,:,n1,:) , local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw downward shortwave radiation', fsw_data(:,:,n1,:))
 
              fieldname = 'dlwsfc'
-             call ice_read_nc(ncid, rec_to_read, fieldname, flw_data(:,:,n1,:), &
-                  local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ice_read_nc(ncid, rec_to_read, fieldname, flw_data(:,:,n1,:) , local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw downward longwave radiation', flw_data(:,:,n1,:))
 
              fieldname = 'ttlpcp'
-             call ice_read_nc(ncid, rec_to_read, fieldname, fsnow_data(:,:,n1,:), &
-                  local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ice_read_nc(ncid, rec_to_read, fieldname, fsnow_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw total preceipitation', fsnow_data(:,:,n1,:))
 
-             ! Optional/new variables: zero if absent.
-             call ERA5_read_optional(ncid, rec_to_read, 'pair',      pair_data,     n1)
-             call ERA5_read_optional(ncid, rec_to_read, 'snowfall',  snowfall_data, n1)
-             call ERA5_read_optional(ncid, rec_to_read, 'rainfall',  frain_data,    n1)
-             call ERA5_read_optional(ncid, rec_to_read, 'blh',       blh_data,      n1)
-             call ERA5_read_optional(ncid, rec_to_read, 'windgust',  windgust_data, n1)
-             call ERA5_read_optional(ncid, rec_to_read, 'wnd100ewd', uatm100_data,  n1)
-             call ERA5_read_optional(ncid, rec_to_read, 'wnd100nwd', vatm100_data,  n1)
+             fieldname = 'pair'
+             call ice_read_nc(ncid, rec_to_read, fieldname, pair_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw surface pressure', pair_data(:,:,n1,:))
+
+             fieldname = 'snowfall'
+             call ice_read_nc(ncid, rec_to_read, fieldname, snowfall_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw snowfall', snowfall_data(:,:,n1,:))
+
+             fieldname = 'rainfall'
+             call ice_read_nc(ncid, rec_to_read, fieldname, frain_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw rainfall', frain_data(:,:,n1,:))
+
+             fieldname = 'blh'
+             call ice_read_nc(ncid, rec_to_read, fieldname, blh_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw boundary layer height', blh_data(:,:,n1,:))
+
+             fieldname = 'windgust'
+             call ice_read_nc(ncid, rec_to_read, fieldname, windgust_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw surface wind gust magnitude', windgust_data(:,:,n1,:))
+
+             fieldname = 'wnd100ewd'
+             call ice_read_nc(ncid, rec_to_read, fieldname, uatm100_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw 100 metre eastward wind', uatm100_data(:,:,n1,:))
+
+             fieldname = 'wnd100nwd'
+             call ice_read_nc(ncid, rec_to_read, fieldname, vatm100_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ERA5_debug_minmax('raw 100 metre northward wind', vatm100_data(:,:,n1,:))
 
           endif
 
