@@ -3149,16 +3149,23 @@ contains
 
   !=======================================================================
   subroutine scale_era5_ant_coastal_precip(precip)
-    ! Scale ERA5 total precipitation over Antarctic coastal ocean cells.
+    ! Scale an ERA5 precipitation field over Antarctic coastal ocean cells.
     !
     ! This is an intentionally simple forcing-sensitivity perturbation:
-    !   - applies only when era5_mod_var selects Antarctic coastal precip
+    !   - applies only when era5_mod_var selects an Antarctic coastal
+    !     precipitation perturbation
     !   - uses ocean cells adjacent to land
     !   - restricts to Southern Ocean / Antarctic latitudes
     !   - applies multiplicative era5_mod_fac
     !
-    ! precip is the ERA5 ttlpcp field already copied into CICE fsnow,
-    ! before CICE partitions precip into rain/snow.
+    ! The field supplied through precip determines the experiment:
+    !   - ttlpcp  for total-precipitation perturbations
+    !   - fsnow   for snowfall-only perturbations
+    !   - frain   for rainfall-only perturbations, if ever needed
+    !
+    ! For the Stage 3 experiment:
+    !   fsnow <- era5_mod_fac * fsnow
+    ! over Antarctic coastal ocean cells only.
     use ice_domain, only : nblocks
     use ice_grid,   only : hm, TLAT
     real(kind=dbl_kind), dimension(nx_block,ny_block,max_blocks), intent(inout) :: precip
@@ -3179,36 +3186,75 @@ contains
     do iblk = 1, nblocks
        do j = 1, ny_block
           do i = 1, nx_block
-             if (is_ant_coastal_ocean_cell(i,j,iblk,lat_cutoff)) then
+             if (is_ant_fastice_forcing_cell(i,j,iblk,lat_cutoff)) then
                 precip(i,j,iblk) = era5_mod_fac * precip(i,j,iblk)
              endif
+             ! if (is_ant_coastal_ocean_cell(i,j,iblk,lat_cutoff)) then
+             !    precip(i,j,iblk) = era5_mod_fac * precip(i,j,iblk)
+             ! endif
           enddo
        enddo
     enddo
     !$OMP END PARALLEL DO
   end subroutine scale_era5_ant_coastal_precip
 
+  ! !=======================================================================
+  ! logical(kind=log_kind) function is_ant_coastal_ocean_cell(i, j, iblk, lat_cutoff)
+  !   ! Crude Antarctic coastal-ocean selector.
+  !   !
+  !   ! A cell is selected if:
+  !   !   1. it is ocean on the T grid,
+  !   !   2. it is south of lat_cutoff,
+  !   !   3. one of its four direct T-grid neighbours is land/boundary.
+  !   use ice_grid, only : hm, TLAT
+  !   integer(kind=int_kind), intent(in) :: i, j, iblk
+  !   real(kind=dbl_kind),    intent(in) :: lat_cutoff
+  !   logical(kind=log_kind) :: ocean_cell
+  !   logical(kind=log_kind) :: adjacent_land
+  !   ocean_cell    = hm(i,j,iblk) > p5
+  !   adjacent_land = .false.
+  !   if (i > 1       ) adjacent_land = adjacent_land .or. hm(i-1,j,iblk) <= p5
+  !   if (i < nx_block) adjacent_land = adjacent_land .or. hm(i+1,j,iblk) <= p5
+  !   if (j > 1       ) adjacent_land = adjacent_land .or. hm(i,j-1,iblk) <= p5
+  !   if (j < ny_block) adjacent_land = adjacent_land .or. hm(i,j+1,iblk) <= p5
+  !   is_ant_coastal_ocean_cell = ocean_cell .and. adjacent_land .and. TLAT(i,j,iblk) <= lat_cutoff
+  ! end function is_ant_coastal_ocean_cell
   !=======================================================================
-  logical(kind=log_kind) function is_ant_coastal_ocean_cell(i, j, iblk, lat_cutoff)
-    ! Crude Antarctic coastal-ocean selector.
+  logical(kind=log_kind) function is_ant_fastice_forcing_cell(i, j, iblk, lat_cutoff)
+    ! Antarctic fast-ice-relevant ocean selector.
     !
     ! A cell is selected if:
     !   1. it is ocean on the T grid,
     !   2. it is south of lat_cutoff,
-    !   3. one of its four direct T-grid neighbours is land/boundary.
-    use ice_grid, only : hm, TLAT
+    !   3. it is either:
+    !        a. directly adjacent to land/boundary on the T grid, or
+    !        b. within the nonzero lateral-drag/form-factor footprint.
+    !
+    ! This keeps the crude coastal fringe while also targeting the
+    ! high-resolution coastline / grounded-iceberg geometry represented in F2.
+    use ice_grid, only : hm, TLAT, F2N, F2E
     integer(kind=int_kind), intent(in) :: i, j, iblk
     real(kind=dbl_kind),    intent(in) :: lat_cutoff
     logical(kind=log_kind) :: ocean_cell
     logical(kind=log_kind) :: adjacent_land
+    logical(kind=log_kind) :: ant_cell
+    logical(kind=log_kind) :: f2_cell
+    real(kind=dbl_kind) :: F2_mag
+    real(kind=dbl_kind), parameter :: F2_min = 1.0e-12_dbl_kind
     ocean_cell    = hm(i,j,iblk) > p5
+    ant_cell      = TLAT(i,j,iblk) <= lat_cutoff
     adjacent_land = .false.
     if (i > 1       ) adjacent_land = adjacent_land .or. hm(i-1,j,iblk) <= p5
     if (i < nx_block) adjacent_land = adjacent_land .or. hm(i+1,j,iblk) <= p5
     if (j > 1       ) adjacent_land = adjacent_land .or. hm(i,j-1,iblk) <= p5
     if (j < ny_block) adjacent_land = adjacent_land .or. hm(i,j+1,iblk) <= p5
-    is_ant_coastal_ocean_cell = ocean_cell .and. adjacent_land .and. TLAT(i,j,iblk) <= lat_cutoff
-  end function is_ant_coastal_ocean_cell
+    f2_cell = abs(F2E(i,j,iblk)) > F2_min .or. abs(F2N(i,j,iblk)) > F2_min .or. &
+         (i > 1 .and. abs(F2E(i-1,j,iblk)) > F2_min) .or. &
+         (j > 1 .and. abs(F2N(i,j-1,iblk)) > F2_min)
+    ! F2_mag  = sqrt(F2N(i,j,iblk)**2 + F2E(i,j,iblk)**2)
+    ! f2_cell = F2_mag > F2_min
+    is_ant_fastice_forcing_cell = ocean_cell .and. ant_cell .and. (adjacent_land .or. f2_cell)
+  end function is_ant_fastice_forcing_cell
 
   !=======================================================================
   subroutine ERA5_debug_minmax(label, field)
@@ -3242,7 +3288,7 @@ contains
     use ice_blocks, only            : block, get_block
     use ice_global_reductions, only : global_minval, global_maxval
     use ice_domain, only            : nblocks, distrb_info
-    use ice_flux, only              : fsnow, Tair, uatm, vatm, Qa, fsw, flw
+    use ice_flux, only              : fsnow, frain, Tair, uatm, vatm, Qa, fsw, flw
     use ice_grid, only              : hm, tmask, umask, TLAT
     use ice_state, only             : aice
     use ice_calendar, only          : mday, mmonth, myear
@@ -3334,10 +3380,10 @@ contains
            rec_to_read /= frec_info(3,n1)) then
 
           ! If slot 1 now equals last step's slot 2, copy instead of reread.
-          if (.false.) then ! n1 == 1 .and. &
-              ! lfyear == frec_info(1,2) .and. &
-              ! lmonth == frec_info(2,2) .and. &
-              ! rec_to_read == frec_info(3,2)) then
+          if (n1 == 1 .and. &
+               lfyear == frec_info(1,2) .and. &
+               lmonth == frec_info(2,2) .and. &
+               rec_to_read == frec_info(3,2)) then
 
              Tair_data    (:,:,1,:) = Tair_data    (:,:,2,:)
              uatm_data    (:,:,1,:) = uatm_data    (:,:,2,:)
@@ -3359,59 +3405,59 @@ contains
              ! Required variables: abort if missing.
              fieldname = 'airtmp'
              call ice_read_nc(ncid, rec_to_read, fieldname, Tair_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw airtmp', Tair_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw airtmp', Tair_data(:,:,n1,:))
 
              fieldname = 'wndewd'
              call ice_read_nc(ncid, rec_to_read, fieldname, uatm_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw eastward wind', uatm_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw eastward wind', uatm_data(:,:,n1,:))
 
              fieldname = 'wndnwd'
              call ice_read_nc(ncid, rec_to_read, fieldname, vatm_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw northward wind', vatm_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw northward wind', vatm_data(:,:,n1,:))
 
              fieldname = 'spchmd'
              call ice_read_nc(ncid, rec_to_read, fieldname, Qa_data(:,:,n1,:)  , local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw specific humidity', Qa_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw specific humidity', Qa_data(:,:,n1,:))
 
              fieldname = 'glbrad'
              call ice_read_nc(ncid, rec_to_read, fieldname, fsw_data(:,:,n1,:) , local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw downward shortwave radiation', fsw_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw downward shortwave radiation', fsw_data(:,:,n1,:))
 
              fieldname = 'dlwsfc'
              call ice_read_nc(ncid, rec_to_read, fieldname, flw_data(:,:,n1,:) , local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw downward longwave radiation', flw_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw downward longwave radiation', flw_data(:,:,n1,:))
 
              fieldname = 'ttlpcp'
              call ice_read_nc(ncid, rec_to_read, fieldname, fsnow_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw total preceipitation', fsnow_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw total preceipitation', fsnow_data(:,:,n1,:))
 
              fieldname = 'pair'
              call ice_read_nc(ncid, rec_to_read, fieldname, pair_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw surface pressure', pair_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw surface pressure', pair_data(:,:,n1,:))
 
              fieldname = 'snowfall'
              call ice_read_nc(ncid, rec_to_read, fieldname, snowfall_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw snowfall', snowfall_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw snowfall', snowfall_data(:,:,n1,:))
 
              fieldname = 'rainfall'
              call ice_read_nc(ncid, rec_to_read, fieldname, frain_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw rainfall', frain_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw rainfall', frain_data(:,:,n1,:))
 
              fieldname = 'blh'
              call ice_read_nc(ncid, rec_to_read, fieldname, blh_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw boundary layer height', blh_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw boundary layer height', blh_data(:,:,n1,:))
 
              fieldname = 'windgust'
              call ice_read_nc(ncid, rec_to_read, fieldname, windgust_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw surface wind gust magnitude', windgust_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw surface wind gust magnitude', windgust_data(:,:,n1,:))
 
              fieldname = 'wnd100ewd'
              call ice_read_nc(ncid, rec_to_read, fieldname, uatm100_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw 100 metre eastward wind', uatm100_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw 100 metre eastward wind', uatm100_data(:,:,n1,:))
 
              fieldname = 'wnd100nwd'
              call ice_read_nc(ncid, rec_to_read, fieldname, vatm100_data(:,:,n1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-             call ERA5_debug_minmax('raw 100 metre northward wind', vatm100_data(:,:,n1,:))
+             ! call ERA5_debug_minmax('raw 100 metre northward wind', vatm100_data(:,:,n1,:))
 
           endif
 
@@ -3447,27 +3493,35 @@ contains
     endif
 
     !-------------------------------------------------------------------
-    ! 4. Apply current Stage 1 semantics.
+    ! 4. Apply current Stage 2 semantics.
     !
     ! States are interpolated.
     ! Fluxes are applied as current hourly record values.
     !
-    ! IMPORTANT: Stage 1 preserves old total-precip behaviour:
-    !   fsnow <- ttlpcp
+    ! Stage 2 uses ERA5 precipitation phase directly:
+    !   fsnow <- snowfall
+    !   frain <- rainfall
     !
-    ! snowfall_data and frain_data are read only for future Stage 2.
+    ! ttlpcp is still read into fsnow_data as a diagnostic/check field,
+    ! but it is no longer passed directly into CICE as snowfall.
     !-------------------------------------------------------------------
     call interpolate_data(Tair_data, Tair)
     call interpolate_data(uatm_data, uatm)
     call interpolate_data(vatm_data, vatm)
     call interpolate_data(Qa_data,   Qa)
 
-    fsw  (:,:,:) = fsw_data  (:,:,1,:)
-    flw  (:,:,:) = flw_data  (:,:,1,:)
-    fsnow(:,:,:) = fsnow_data(:,:,1,:)
+    fsw  (:,:,:) = fsw_data      (:,:,1,:)
+    flw  (:,:,:) = flw_data      (:,:,1,:)
+    fsnow(:,:,:) = snowfall_data (:,:,1,:)
+    frain(:,:,:) = frain_data    (:,:,1,:)
 
-    if (trim(era5_mod_var) == 'ttlpcp_ant_coast' .or. &
-        trim(era5_mod_var) == 'precip_ant_coast') then
+    ! Defensive clipping. These should already be non-negative after shuga
+    ! preprocessing, but this protects CICE from tiny numerical artifacts.
+    fsnow(:,:,:) = max(fsnow(:,:,:), c0)
+    frain(:,:,:) = max(frain(:,:,:), c0)
+
+    if (trim(era5_mod_var) == 'snow_ant_coast' .or. &
+         trim(era5_mod_var) == 'snowfall_ant_coast') then
        call scale_era5_ant_coastal_precip(fsnow)
     endif
 
@@ -3492,6 +3546,7 @@ contains
              fsw  (i,j,iblk) = fsw  (i,j,iblk) * hm(i,j,iblk)
              flw  (i,j,iblk) = flw  (i,j,iblk) * hm(i,j,iblk)
              fsnow(i,j,iblk) = fsnow(i,j,iblk) * hm(i,j,iblk)
+             frain(i,j,iblk) = frain(i,j,iblk) * hm(i,j,iblk)
           enddo
        enddo
 
@@ -3516,6 +3571,10 @@ contains
        vmin = global_minval(fsnow,distrb_info,tmask)
        vmax = global_maxval(fsnow,distrb_info,tmask)
        if (my_task.eq.master_task) write(nu_diag,*) subname, '  fsnow', vmin, vmax
+
+       vmin = global_minval(frain,distrb_info,tmask)
+       vmax = global_maxval(frain,distrb_info,tmask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  frain', vmin, vmax
 
        vmin = global_minval(Tair,distrb_info,tmask)
        vmax = global_maxval(Tair,distrb_info,tmask)

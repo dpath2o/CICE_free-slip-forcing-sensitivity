@@ -16,7 +16,9 @@
 !           Converted to free source form (F90)
 ! 2007: netcdf version of read_data added by Alison McLaren, Met Office
 ! 2024 DPA: added hourly-ERA5 and daily/weekly/monthly ocean forcing
+! 2025 DPA: revised daily/weekly/monthly ocean forcing to be inline with CICE princples
 !
+
 module ice_forcing
   use ice_kinds_mod
   use ice_boundary     , only: ice_HaloUpdate
@@ -42,34 +44,95 @@ module ice_forcing
   implicit none
   private
   public :: alloc_forcing, init_forcing_atmo, init_forcing_ocn, init_snowtable, &
-            get_forcing_atmo, get_forcing_ocn, get_wave_spec, &
-            read_clim_data, read_clim_data_nc, read_data_nc_point, &
-            interpolate_data, interp_coeff_monthly, interp_coeff
+       init_tides_metadata, alloc_tides_fields, init_tides_fields, &
+       compute_tides_at_time, &
+       get_forcing_atmo, get_forcing_ocn, get_wave_spec, &
+       read_clim_data, read_clim_data_nc, read_data_nc_point, &
+       interpolate_data, interp_coeff_monthly, interp_coeff
   ! create variable namespace and allocate types
   ! year information
-  integer (kind=int_kind), public :: ycycle          , & ! number of years in forcing cycle, set by namelist
-                                     fyear_init      , & ! first year of data in forcing cycle, set by namelist
-                                     fyear           , & ! current year in forcing cycle, varying during the run
-                                     fyear_final         ! last year in cycle, computed at init
+  integer (kind=int_kind), public :: &
+       ycycle          , & ! number of years in forcing cycle, set by namelist
+       fyear_init      , & ! first year of data in forcing cycle, set by namelist
+       fyear           , & ! current year in forcing cycle, varying during the run
+       fyear_final         ! last year in cycle, computed at init
+  ! TIDES
+  integer (kind=int_kind), public :: &
+       tide_nconst = 0, &
+       tide_nj = 0, &
+       tide_ni = 0
+  logical (kind=log_kind), public :: &
+       tide_metadata_loaded = .false.
+  real (kind=dbl_kind), dimension(:), allocatable, public :: &
+       tide_omega, &
+       tide_phase, &
+       tide_alpha, &
+       tide_amplitude
+  character(len=256), public :: &
+       tide_constituent_order = ''
+  logical (kind=log_kind), public :: &
+       tide_fields_loaded = .false.
+  real (kind=dbl_kind), dimension(:,:,:,:), allocatable, public :: &
+       tide_hRe, &
+       tide_hIm, &
+       tide_URe, &
+       tide_UIm, &
+       tide_VRe, &
+       tide_VIm
+  real (kind=dbl_kind), dimension(:,:,:), allocatable, public :: &
+       tide_wct, &
+       tide_mask, &
+       tide_depth_fac, & ! 0..1 reliability taper from CATS wct and CICE bathymetry
+       tide_h_eff       ! effective depth for transport-to-current conversion [m]
+  ! Tidal-current diagnostics.
+  !
+  ! These fields are diagnostic only.  They separate the harmonic tide
+  ! pathway from the background ocean forcing and allow offline analysis of
+  ! sub-daily current variability without writing every dynamics substep.
+  !
+  ! raw  : current reconstructed from harmonics before final cap/limiter use
+  ! eff  : final perturbation actually added to uocn/vocn
+  ! day* : within-model-day accumulators reset when myear/mmonth/mday changes
+  real (kind=dbl_kind), dimension(:,:,:), allocatable, public :: &
+       tide_u_raw,          &
+       tide_v_raw,          &
+       tide_speed_raw,      &
+       tide_u_eff,          &
+       tide_v_eff,          &
+       tide_speed_eff,      &
+       tide_speed_daymax,   &
+       tide_speed_dayrms,   &
+       tide_speed_daysum,   &
+       tide_speed2_daysum,  &
+       tide_n_subday,       &
+       tide_n_curr_over_fi, &
+       tide_n_capped
+  real (kind=dbl_kind), public :: &
+       tide_curr_diag_thresh = 5.0e-4_dbl_kind   ! m/s; diagnostic only
+  integer (kind=int_kind), public :: &
+       tide_diag_myear  = -9999, &
+       tide_diag_mmonth = -9999, &
+       tide_diag_mday   = -9999
   ! input data file names
-  character (char_len_long) :: F_uwind, &
-                               F_vwind, &
-                               F_wind, &
-                               F_strax, &
-                               F_stray, &
-                               F_tair, &
-                               F_humid, &
-                               F_rhoa, &
-                               F_fsw, &
-                               F_flw, &
-                               F_rain, &
-                               F_sst, &
-                               F_sss, &
-                               F_sublim, &
-                               F_snow, &
-                               F_ERA5, &
-                               F_ocn, &
-                               F_AFIM
+  character (char_len_long) :: &
+       F_uwind, &
+       F_vwind, &
+       F_wind, &
+       F_strax, &
+       F_stray, &
+       F_tair, &
+       F_humid, &
+       F_rhoa, &
+       F_fsw, &
+       F_flw, &
+       F_rain, &
+       F_sst, &
+       F_sss, &
+       F_sublim, &
+       F_snow, &
+       F_ERA5, &
+       F_ocn, &
+       F_AFIM
   ! input data file names
   character (char_len_long), dimension(:), allocatable, public :: topmelt_file, botmelt_file
   ! interpolation coefficients
@@ -79,41 +142,77 @@ module ice_forcing
   ! cloud fraction
   real (kind=dbl_kind), dimension(:,:,:), allocatable, public :: cldf
   ! 3-d field values at 2 temporal data points
-  real (kind=dbl_kind), dimension(:,:,:,:), allocatable, public :: fsw_data,    &
-                                                                   cldf_data,   &
-                                                                   fsnow_data,  &
-                                                                   Tair_data,   &
-                                                                   uatm_data,   &
-                                                                   vatm_data,   &
-                                                                   wind_data,   &
-                                                                   strax_data,  &
-                                                                   stray_data,  &
-                                                                   Qa_data,     &
-                                                                   rhoa_data,   &
-                                                                   flw_data,    &
-                                                                   ocn_data,    &
-                                                                   sst_data,    &
-                                                                   sss_data,    &
-                                                                   uocn_data,   &
-                                                                   vocn_data,   &
-                                                                   sublim_data, &
-                                                                   frain_data
+  real (kind=dbl_kind), dimension(:,:,:,:), allocatable, public :: &
+       fsw_data,    &
+       cldf_data,   &
+       fsnow_data,  &
+       Tair_data,   &
+       uatm_data,   &
+       vatm_data,   &
+       wind_data,   &
+       strax_data,  &
+       stray_data,  &
+       Qa_data,     &
+       rhoa_data,   &
+       flw_data,    &
+       ocn_data,    &
+       sst_data,    &
+       sss_data,    &
+       uocn_data,   &
+       vocn_data,   &
+       sublim_data, &
+       frain_data,   &
+       pair_data,    &
+       snowfall_data,&
+       blh_data,     &
+       windgust_data,&
+       uatm100_data, &
+       vatm100_data
   ! 4-d (categorical) field values at 2 temporal data points
   real (kind=dbl_kind), dimension(:,:,:,:,:), allocatable, public :: topmelt_data, botmelt_data
+  ! ERA5 monthly in-memory cache. ERA5 monthly files are hourly, with at most 31*24 = 744 records.
+  ! These arrays cache one complete month on the local distributed CICE decomposition, avoiding
+  ! NetCDF open/read/close every timestep.
+  integer(kind=int_kind), parameter :: era5_maxrec_month = 31*24
+  integer(kind=int_kind), save :: &
+       era5_cache_year  = -9999, &
+       era5_cache_month = -9999, &
+       era5_cache_nrec  = -9999
+  character(char_len_long), save :: era5_cache_file = ''
+  real(kind=dbl_kind), dimension(:,:,:,:), allocatable, public :: &
+       era5_Tair_month,     &
+       era5_uatm_month,     &
+       era5_vatm_month,     &
+       era5_Qa_month,       &
+       era5_fsw_month,      &
+       era5_flw_month,      &
+       era5_ttlpcp_month,   &
+       era5_pair_month,     &
+       era5_snowfall_month, &
+       era5_frain_month,    &
+       era5_blh_month,      &
+       era5_windgust_month, &
+       era5_uatm100_month,  &
+       era5_vatm100_month
   ! data formats and types
-  character(char_len), public :: atm_data_format, & ! 'bin'=binary or 'nc'=netcdf
-                                 ocn_data_format, & ! 'bin'=binary or 'nc'=netcdf
-                                 atm_data_type,   & ! 'default', 'monthly', 'ncar', 'box2001', 'hadgem', 'oned', 'calm', 'uniform', 'ERA5', 'JRA55_***'
-                                 bgc_data_type,   & ! 'default', 'clim'
-                                 ocn_data_type,   & ! 'default', 'clim', 'ncar', 'oned', 'calm', 'box2001', 'hadgem_sst' or 'hadgem_sst_uvocn', 'uniform', 'AFIM'
-                                 ocn_data_freq,   & ! 'monthly', 'daily' <--- ONLY VALID IN AFIM_ocn subroutines --->
-                                 era5_mod_var,    & ! <--------- ONLY VALID IN ERA5_data --------->
-                                                    ! 'u','v','wspd','tair','qair','sw','lw'
-                                                    ! DEFAULT: ''; blank string, which means no modification
-                                 ice_data_type,   & ! 'latsst', 'box2001', 'boxslotcyl', etc
-                                 ice_data_conc,   & ! 'p5','p8','p9','c1','parabolic', 'box2001', etc
-                                 ice_data_dist,   & ! 'box2001','gauss', 'uniform', etc
-                                 precip_units       ! 'mm_per_month', 'mm_per_sec', 'mks','m_per_sec'
+  character(char_len), public :: &
+       atm_data_format,  & ! 'bin'=binary or 'nc'=netcdf
+       ocn_data_format,  & ! 'bin'=binary or 'nc'=netcdf
+       atm_data_type,    & ! 'default', 'monthly', 'ncar', 'box2001', 'hadgem', 'oned', 'calm', 'uniform', 'ERA5', 'JRA55_***'
+       atm_data_version, & ! date of atm_forcing file creation
+       bgc_data_type,    & ! 'default', 'clim'
+       ocn_data_type,    & ! 'default', 'clim', 'ncar', 'oned', 'calm', 'box2001', 'hadgem_sst' or 'hadgem_sst_uvocn', 'uniform', 'AFIM'
+       era5_mod_var,     & ! <--------- ONLY VALID IN ERA5_data --------->
+                           !    'none'
+                           !    'ttlpcp_ant_coast' or 'precip_ant_coast'
+                           !    Future options may include:
+                           !    'u','v','wspd','tair','qair','sw','lw'
+       tide_data_type,   & ! 'none' or 'harmonic'
+       tide_data_format, & ! 'none' or 'CICE_TMD3'
+       ice_data_type,    & ! 'latsst', 'box2001', 'boxslotcyl', etc
+       ice_data_conc,    & ! 'p5','p8','p9','c1','parabolic', 'box2001', etc
+       ice_data_dist,    & ! 'box2001','gauss', 'uniform', etc
+       precip_units        ! 'mm_per_month', 'mm_per_sec', 'mks','m_per_sec'
   ! modified atmospheric forcing field scale factor
   real (kind=dbl_kind), public :: era5_mod_fac ! <--------- ONLY VALID IN ERA5_data --------->
                                                ! a multiplicative for scaling atmospheric data
@@ -121,11 +220,13 @@ module ice_forcing
   ! rotate wind/stress to computational grid from true north directed
   logical (kind=log_kind), public :: rotate_wind
   ! directory information
-  character(char_len_long), public :: atm_data_dir , & ! top directory for atmospheric data
-                                      ocn_data_dir , & ! top directory for ocean data
-                                      wave_spec_dir, & ! dir name for wave spectrum
-                                      wave_spec_file,& ! file name for wave spectrum
-                                      oceanmixed_file  ! file name for ocean forcing data
+  character(char_len_long), public :: &
+       atm_data_dir,    & ! top directory for atmospheric data
+       ocn_data_dir,    & ! top directory for ocean data
+       wave_spec_dir,   & ! dir name for wave spectrum
+       wave_spec_file,  & ! file name for wave spectrum
+       oceanmixed_file, & ! file name for ocean forcing data
+       tide_data_file     ! harmonic tide file on CICE T-grid
   ! number of fields to search for in forcing file
   integer (kind=int_kind), parameter :: nfld = 8, ndfld = 4
  ! number of months and days in year for ocean forcing
@@ -141,8 +242,23 @@ module ice_forcing
   logical (kind=log_kind), public :: restore_ocn
   ! restoring time scale (days)
   integer (kind=int_kind), public :: trestore
+  ! AFIM_data() subroutine specific
+  real(kind=dbl_kind), public :: hmix_0  ! initial (or fixed if standalone) mixed layer depth
   ! restoring time scale (sec)
   real (kind=dbl_kind), public :: trest
+  ! tidal switches
+  logical(kind=log_kind), public :: &
+       tide_use_currents, & ! apply tidal u/v from harmonics
+       tide_use_ssh,      & ! apply tidal eta -> ss_tltx/ss_tlty
+       tide_use_bathymetry_limit = .true. ! use CICE bathymetry with CATS wct to taper currents
+  real (kind=dbl_kind), public :: &
+       tide_curr_fac       = 1.0_dbl_kind,  & ! multiply tidal currents by this factor
+       tide_speed_cap      = 2.0_dbl_kind,  & ! emergency cap on tidal current vector speed [m/s]
+       tide_wct_min        = 20.0_dbl_kind, & ! zero tide currents at/below this reliable depth [m]
+       tide_wct_full       = 80.0_dbl_kind, & ! full tide currents at/above this reliable depth [m]
+       tide_h_eff_min      = 50.0_dbl_kind, & ! minimum effective depth for U/h conversion [m]
+       tide_depth_mismatch = 4.0_dbl_kind,  & ! diagnostic threshold for CATS/CICE depth mismatch ratio
+       tide_ramp_days      = 20.0_dbl_kind    ! half-cosine ramp-up time from branch start [days]
   ! prints forcing debugging output if true
   logical (kind=log_kind), public :: debug_forcing
   ! jday time vector from atm forcing files
@@ -174,37 +290,79 @@ contains
     integer (int_kind) :: ierr
     character(len=*), parameter :: subname = '(alloc_forcing)'
     if (local_debug .and. my_task == master_task) write(nu_diag,*) subname,'fdbg start'
-    allocate ( cldf        (nx_block,ny_block,max_blocks), & ! cloud fraction
-         fsw_data    (nx_block,ny_block,2,max_blocks), & ! field values at 2 temporal data points
-         cldf_data   (nx_block,ny_block,2,max_blocks), &
-         fsnow_data  (nx_block,ny_block,2,max_blocks), &
-         Tair_data   (nx_block,ny_block,2,max_blocks), &
-         uatm_data   (nx_block,ny_block,2,max_blocks), &
-         vatm_data   (nx_block,ny_block,2,max_blocks), &
-         wind_data   (nx_block,ny_block,2,max_blocks), &
-         strax_data  (nx_block,ny_block,2,max_blocks), &
-         stray_data  (nx_block,ny_block,2,max_blocks), &
-         Qa_data     (nx_block,ny_block,2,max_blocks), &
-         rhoa_data   (nx_block,ny_block,2,max_blocks), &
-         flw_data    (nx_block,ny_block,2,max_blocks), &
-         ocn_data    (nx_block,ny_block,2,max_blocks), &
-         sst_data    (nx_block,ny_block,2,max_blocks), &
-         sss_data    (nx_block,ny_block,2,max_blocks), &
-         uocn_data   (nx_block,ny_block,2,max_blocks), &
-         vocn_data   (nx_block,ny_block,2,max_blocks), &
-         sublim_data (nx_block,ny_block,2,max_blocks), &
-         frain_data  (nx_block,ny_block,2,max_blocks), &
-         topmelt_data(nx_block,ny_block,2,max_blocks,ncat), &
-         botmelt_data(nx_block,ny_block,2,max_blocks,ncat), &
-         ocn_frc_m   (nx_block,ny_block,max_blocks,nfld,m_per_yr), &
-         ocn_frc_d   (nx_block,ny_block,max_blocks,nfld,days_per_year), &
-         ocn_frc_w   (nx_block,ny_block,max_blocks,nfld,wk_per_yr), &
+    allocate ( &
+         cldf               (nx_block,ny_block,max_blocks), &   ! cloud fraction
+         fsw_data           (nx_block,ny_block,2,max_blocks), & ! field values at 2 temporal data points
+         cldf_data          (nx_block,ny_block,2,max_blocks), &
+         fsnow_data         (nx_block,ny_block,2,max_blocks), &
+         Tair_data          (nx_block,ny_block,2,max_blocks), &
+         uatm_data          (nx_block,ny_block,2,max_blocks), &
+         vatm_data          (nx_block,ny_block,2,max_blocks), &
+         wind_data          (nx_block,ny_block,2,max_blocks), &
+         strax_data         (nx_block,ny_block,2,max_blocks), &
+         stray_data         (nx_block,ny_block,2,max_blocks), &
+         Qa_data            (nx_block,ny_block,2,max_blocks), &
+         rhoa_data          (nx_block,ny_block,2,max_blocks), &
+         flw_data           (nx_block,ny_block,2,max_blocks), &
+         frain_data         (nx_block,ny_block,2,max_blocks), &
+         pair_data          (nx_block,ny_block,2,max_blocks), &
+         snowfall_data      (nx_block,ny_block,2,max_blocks), &
+         blh_data           (nx_block,ny_block,2,max_blocks), &
+         windgust_data      (nx_block,ny_block,2,max_blocks), &
+         uatm100_data       (nx_block,ny_block,2,max_blocks), &
+         vatm100_data       (nx_block,ny_block,2,max_blocks), &
+         era5_Tair_month    (nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         era5_uatm_month    (nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         era5_vatm_month    (nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         era5_Qa_month      (nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         era5_fsw_month     (nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         era5_flw_month     (nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         era5_ttlpcp_month  (nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         era5_pair_month    (nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         era5_snowfall_month(nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         era5_frain_month   (nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         era5_blh_month     (nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         era5_windgust_month(nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         era5_uatm100_month (nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         era5_vatm100_month (nx_block,ny_block,era5_maxrec_month,max_blocks), &
+         topmelt_data       (nx_block,ny_block,2,max_blocks,ncat), &
+         botmelt_data       (nx_block,ny_block,2,max_blocks,ncat), &
+         ocn_data           (nx_block,ny_block,2,max_blocks), &
+         sst_data           (nx_block,ny_block,2,max_blocks), &
+         sss_data           (nx_block,ny_block,2,max_blocks), &
+         uocn_data          (nx_block,ny_block,2,max_blocks), &
+         vocn_data          (nx_block,ny_block,2,max_blocks), &
+         sublim_data        (nx_block,ny_block,2,max_blocks), &
+         ocn_frc_m          (nx_block,ny_block,max_blocks,nfld,m_per_yr), &
+         ocn_frc_d          (nx_block,ny_block,max_blocks,nfld,days_per_year), &
+         ocn_frc_w          (nx_block,ny_block,max_blocks,nfld,wk_per_yr), &
          topmelt_file(ncat), &
          botmelt_file(ncat), &
          stat=ierr)
     if (ierr/=0) call abort_ice('(alloc_forcing): Out of Memory')
     ! initialize this, not set in box2001 (and some other forcings?)
-    cldf = c0
+    cldf                = c0
+    pair_data           = c0
+    snowfall_data       = c0
+    frain_data          = c0
+    blh_data            = c0
+    windgust_data       = c0
+    uatm100_data        = c0
+    vatm100_data        = c0
+    era5_Tair_month     = c0
+    era5_uatm_month     = c0
+    era5_vatm_month     = c0
+    era5_Qa_month       = c0
+    era5_fsw_month      = c0
+    era5_flw_month      = c0
+    era5_ttlpcp_month   = c0
+    era5_pair_month     = c0
+    era5_snowfall_month = c0
+    era5_frain_month    = c0
+    era5_blh_month      = c0
+    era5_windgust_month = c0
+    era5_uatm100_month  = c0
+    era5_vatm100_month  = c0
   end subroutine alloc_forcing
 
   !=======================================================================
@@ -215,9 +373,6 @@ contains
     integer (kind=int_kind)     :: modadj   ! adjustment for mod function
     character(len=*), parameter :: subname = '(init_forcing_atmo)'
     if (local_debug .and. my_task == master_task) write(nu_diag,*) subname,'fdbg start'
-    !modadj      = abs((min(0,myear-fyear_init)/ycycle+1)*ycycle)
-    !fyear       = fyear_init + mod(myear-fyear_init+modadj,ycycle)
-    !fyear_final = fyear_init + ycycle - 1 ! last year in forcing cycle
     if (ycycle == 0) then
        fyear       = myear
        fyear_final = myear
@@ -287,7 +442,7 @@ contains
     elseif (trim(atm_data_type) == 'hycom') then
        call hycom_atm_files
     elseif (trim(atm_data_type) == 'ERA5') then
-       call ERA5_files(fyear)
+       call ERA5_monthly_files(fyear, mmonth)
     elseif (trim(atm_data_type) == 'default') then
        ! don't need to do anything more
     else
@@ -303,8 +458,9 @@ contains
     ! SST is subsequently prognosed if CICE is run with a mixed layer ocean (oceanmixed_ice = T), and can be restored to data (restore_ocn = T).
     use ice_blocks, only     : nx_block, ny_block
     use ice_domain, only     : nblocks
-    use ice_domain_size, only: max_blocks
-    use ice_flux, only       : sss, sst, Tf
+    use ice_domain_size, only: max_blocks 
+    use ice_flux, only       : sss, sst, Tf, uocn, vocn, hmix, frzmlt, qdp, ss_tltx, ss_tlty
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_is_nan
     real (kind=dbl_kind), intent(in) :: dt            ! this is namelist input parameter
     integer (kind=int_kind)          :: i, j, iblk, & ! horizontal indices
                                         k         , & ! month index
@@ -434,9 +590,7 @@ contains
     elseif (trim(ocn_data_type) == 'default') then
        ! don't need to do anything more
     elseif (trim(ocn_data_type) == 'AFIM') then
-       ! modadj      = abs((min(0,myear-fyear_init)/ycycle+1)*ycycle)
-       ! fyear       = fyear_init + mod(myear-fyear_init+modadj,ycycle)
-       ! fyear_final = fyear_init + ycycle - 1 ! last year in forcing cycle
+       ! Initialize forcing year
        if (ycycle == 0) then
           fyear       = myear
           fyear_final = myear
@@ -445,23 +599,1105 @@ contains
           fyear       = fyear_init + mod(myear - fyear_init + modadj, ycycle)
           fyear_final = fyear_init + ycycle - 1
        endif
-       if (my_task == master_task) then
-          write(nu_diag,*) subname,' fyear, fyear_init, fyear_final : ',fyear,fyear_init,fyear_final
-          write(nu_diag,*) subname,' atm_data_type                  : ',trim(atm_data_type)
+       if (debug_forcing .or. local_debug) then
+         if (my_task == master_task) then
+            write(nu_diag,*) subname, ' AFIM ocean forcing initialization'
+            write(nu_diag,*) subname, ' fyear, fyear_init, fyear_final: ', fyear, fyear_init, fyear_final
+            if (restore_ocn) write(nu_diag,*) subname, ' SST restoring timescale (days): ', trestore
+         endif
        endif
-       if (my_task == master_task) then
-          write (nu_diag,*) ' Initial forcing data year = ',fyear
-          write (nu_diag,*) ' Final   forcing data year = ',fyear_final
-       endif
-       if(my_task.eq.master_task) write(nu_diag,*) subname,' ocn_data_type         : ',trim(ocn_data_type)
-       if(my_task.eq.master_task) write(nu_diag,*) subname,' ocn_data_freq         : ',trim(ocn_data_freq)
-       if(my_task.eq.master_task) write(nu_diag,*) subname,' restoring time (days) : ',trestore
+       ! Set up forcing file for current year
        call AFIM_files(fyear)
-       ! call AFIM_init
+       if (debug_forcing .or. local_debug) then
+         if (my_task == master_task) then
+            write(nu_diag,*) subname, ' Reading initial ocean state from: ', trim(F_AFIM)
+         endif
+       endif
+       ! Read SSS first (we need it for Tf calculation)
+       call ice_open_nc(F_AFIM, fid)
+       call ice_read_nc(fid, 1, 'sss', sss, debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
+       call ice_read_nc(fid, 1, 'u', uocn, debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
+       call ice_read_nc(fid, 1, 'v', vocn, debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
+       call ice_close_nc(fid)
+       ! Set default values for SSS, uocn, vocn where needed
+       do iblk = 1, nblocks
+          do j = 1, ny_block
+             do i = 1, nx_block
+                ! SSS bounds
+                if (sss(i,j,iblk) < 0.0_dbl_kind .or. sss(i,j,iblk) > 50.0_dbl_kind .or. sss(i,j,iblk) /= sss(i,j,iblk)) then
+                   sss(i,j,iblk) = 34.0_dbl_kind
+                endif
+                ! Velocity bounds
+                if (abs(uocn(i,j,iblk)) > 10.0_dbl_kind .or. uocn(i,j,iblk) /= uocn(i,j,iblk)) then
+                   uocn(i,j,iblk) = c0
+                endif
+                if (abs(vocn(i,j,iblk)) > 10.0_dbl_kind .or. vocn(i,j,iblk) /= vocn(i,j,iblk)) then
+                   vocn(i,j,iblk) = c0
+                endif
+             enddo
+          enddo
+       enddo
+       ! TIDES
+       if (trim(tide_data_type) == 'harmonic') then
+          call init_tides_metadata
+          call alloc_tides_fields
+          call init_tides_fields
+       endif
+       ! Compute freezing temperature from SSS
+       call ocn_freezing_temperature
+       ! Initialize SST to Tf (freezing point) for ALL points
+       ! This ensures SST always has a valid value before restoring is applied
+       do iblk = 1, nblocks
+          do j = 1, ny_block
+             do i = 1, nx_block
+                sst(i,j,iblk) = Tf(i,j,iblk)
+             enddo
+          enddo
+       enddo
+       !----------------------------------------------------------------
+       ! initialize mixed layer variables for oceanmixed_ice!
+       ! Without this, the ocean mixed layer calculation produces NaN.
+       !----------------------------------------------------------------
+       hmix   (:,:,:) = hmix_0   ! ocean mixed layer depth (60m default)
+       frzmlt (:,:,:) = c0       ! freezing/melting potential (W/m^2)
+       qdp    (:,:,:) = c0       ! deep ocean heat flux (W/m^2)
+       ss_tltx(:,:,:) = c0       ! sea surface tilt (m/m)
+       ss_tlty(:,:,:) = c0
+       if (debug_forcing .or. local_debug) then
+         if (my_task == master_task) then
+            write(nu_diag,*) subname, ' AFIM initialization complete'
+            write(nu_diag,*) subname, ' SST initialized to Tf, hmix = ', mixed_layer_depth_default
+         endif
+       endif
     else
        call abort_ice (error_message=subname//' ERROR ocn_data_type unknown = '// trim(ocn_data_type), file=__FILE__, line=__LINE__)
     endif
   end subroutine init_forcing_ocn
+
+  !=======================================================================
+  !=======================================================================
+  ! Initialise metadata for harmonic tidal forcing.
+  !
+  ! This routine reads only lightweight/global metadata from the tide
+  ! coefficient file:
+  !
+  !   - number of tidal constituents
+  !   - tide-file horizontal dimensions
+  !   - constituent angular frequencies and phase metadata
+  !   - optional global attribute describing constituent order
+  !
+  ! The large spatial coefficient fields are NOT read here. They are read
+  ! later by init_tides_fields().
+  !
+  ! Design notes:
+  !   * Only master_task opens the NetCDF file directly.
+  !   * Metadata are then broadcast to all MPI tasks.
+  !   * The tide grid is required to match the active CICE grid exactly
+  !     because this prototype file has already been regridded to the CICE
+  !     T-grid. No runtime horizontal interpolation is performed here.
+  !   * The harmonic phase clock is tied to the CATS/TMD reference epoch
+  !     used when constructing the coefficient file.
+  !
+  ! Interpretation:
+  !   Successful completion of this routine means that CICE can identify
+  !   the tidal constituents and grid geometry. It does NOT yet mean that
+  !   tidal currents are dynamically active; that requires init_tides_fields()
+  !   and compute_tides_at_time().
+  !=======================================================================
+  subroutine init_tides_metadata
+#ifdef USE_NETCDF
+    use netcdf, only: nf90_noerr, nf90_global, nf90_inq_dimid, nf90_inquire_dimension, &
+                      nf90_inq_varid, nf90_get_var, nf90_get_att, nf90_strerror
+#endif
+    use ice_broadcast, only: broadcast_scalar
+    integer (kind=int_kind) :: ncid
+    integer (kind=int_kind) :: dimid
+    integer (kind=int_kind) :: varid
+    integer (kind=int_kind) :: ierr
+    integer (kind=int_kind) :: n
+    character(len=*), parameter :: subname = '(init_tides_metadata)'
+    if (trim(tide_data_type) /= 'harmonic') return
+    if (tide_metadata_loaded) return
+#ifndef USE_NETCDF
+    call abort_ice(error_message=subname//' ERROR tide metadata requires USE_NETCDF', &
+         file=__FILE__, line=__LINE__)
+#else
+    if (trim(tide_data_format) /= 'CICE_TMD3') then
+       call abort_ice(error_message=subname//' ERROR unsupported tide_data_format = '//trim(tide_data_format), &
+            file=__FILE__, line=__LINE__)
+    endif
+    if (trim(tide_data_file) == 'unknown_tide_file') then
+       call abort_ice(error_message=subname//' ERROR tide_data_file not set', &
+            file=__FILE__, line=__LINE__)
+    endif
+    ! Set safe defaults on all ranks before master_task reads the file.
+    ! These values are overwritten after successful metadata read and broadcast.
+    ! If the read fails before broadcast, these defaults avoid undefined state.
+    tide_nconst = 0
+    tide_nj     = 0
+    tide_ni     = 0
+    tide_constituent_order = 'unknown'
+    if (my_task == master_task) then
+       ! File-path diagnostics.
+       ! These are deliberately verbose because failed NetCDF opens on Gadi
+       ! are often caused by trailing blanks, unexpected default strings, or
+       ! namelist path edits not propagating as expected.
+       write(nu_diag,*) subname//' pre-open len(tide_data_file)      = ', len(tide_data_file)
+       write(nu_diag,*) subname//' pre-open len_trim(tide_data_file) = ', len_trim(tide_data_file)
+       write(nu_diag,*) subname//' pre-open raw tide_data_file       = >', tide_data_file, '<'
+       write(nu_diag,*) subname//' pre-open trim(tide_data_file)     = >', trim(tide_data_file), '<'
+       ! Read dimensions from the pre-regridded CICE_TMD3 file.
+       ! Expected file layout:
+       !   constituents = number of harmonic constituents
+       !   nj           = CICE ny_global
+       !   ni           = CICE nx_global
+       call ice_open_nc(trim(tide_data_file), ncid)
+       ierr = nf90_inq_dimid(ncid, 'constituents', dimid)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR missing dim constituents: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_inquire_dimension(ncid, dimid, len=tide_nconst)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR reading dim constituents: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_inq_dimid(ncid, 'nj', dimid)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR missing dim nj: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_inquire_dimension(ncid, dimid, len=tide_nj)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR reading dim nj: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_inq_dimid(ncid, 'ni', dimid)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR missing dim ni: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_inquire_dimension(ncid, dimid, len=tide_ni)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR reading dim ni: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+    endif
+    call broadcast_scalar(tide_nconst, master_task)
+    call broadcast_scalar(tide_nj,     master_task)
+    call broadcast_scalar(tide_ni,     master_task)
+    ! The tide file must already be on the active CICE T-grid.
+    ! A mismatch here means the wrong grid file was supplied, or the model
+    ! is being run with a different domain/grid than the tide preprocessing
+    ! assumed. Abort rather than silently applying spatially inconsistent
+    ! forcing.
+    if (tide_nj /= ny_global .or. tide_ni /= nx_global) then
+       if (my_task == master_task) then
+          write(nu_diag,*) subname//' ERROR tide file dims do not match CICE grid'
+          write(nu_diag,*) subname//' tide_nj, tide_ni = ', tide_nj, tide_ni
+          write(nu_diag,*) subname//' ny_global, nx_global = ', ny_global, nx_global
+       endif
+       call abort_ice(error_message=subname//' tide grid mismatch', &
+            file=__FILE__, line=__LINE__)
+    endif
+    if (allocated(tide_omega))     deallocate(tide_omega)
+    if (allocated(tide_phase))     deallocate(tide_phase)
+    if (allocated(tide_alpha))     deallocate(tide_alpha)
+    if (allocated(tide_amplitude)) deallocate(tide_amplitude)
+    ! Allocate one-dimensional constituent metadata arrays.
+    ! These are small and replicated on every rank after broadcast.
+    !
+    ! tide_omega     : angular frequency [rad s-1]
+    ! tide_phase     : phase offset used in arg = omega*t + phase [rad]
+    ! tide_alpha     : nodal/equilibrium correction metadata, if supplied
+    ! tide_amplitude : constituent amplitude metadata, mainly diagnostic here
+    allocate(tide_omega(tide_nconst))
+    allocate(tide_phase(tide_nconst))
+    allocate(tide_alpha(tide_nconst))
+    allocate(tide_amplitude(tide_nconst))
+    tide_omega     = c0
+    tide_phase     = c0
+    tide_alpha     = c0
+    tide_amplitude = c0
+    if (my_task == master_task) then
+       ierr = nf90_inq_varid(ncid, 'omega', varid)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR missing var omega: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_get_var(ncid, varid, tide_omega)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR reading omega: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_inq_varid(ncid, 'phase', varid)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR missing var phase: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_get_var(ncid, varid, tide_phase)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR reading phase: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_inq_varid(ncid, 'alpha', varid)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR missing var alpha: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_get_var(ncid, varid, tide_alpha)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR reading alpha: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_inq_varid(ncid, 'amplitude', varid)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR missing var amplitude: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_get_var(ncid, varid, tide_amplitude)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR reading amplitude: '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_get_att(ncid, nf90_global, 'constituent_order', tide_constituent_order)
+       if (ierr /= nf90_noerr) tide_constituent_order = 'unknown'
+       call ice_close_nc(ncid)
+    endif
+    do n = 1, tide_nconst
+       call broadcast_scalar(tide_omega(n),     master_task)
+       call broadcast_scalar(tide_phase(n),     master_task)
+       call broadcast_scalar(tide_alpha(n),     master_task)
+       call broadcast_scalar(tide_amplitude(n), master_task)
+    enddo
+    call broadcast_scalar(tide_constituent_order, master_task)
+    tide_metadata_loaded = .true.
+    ! Echo the tide configuration to ice_diag.d.
+    ! This makes each experiment self-documenting, which is critical when
+    ! comparing tide_curr_fac, current caps, depth tapers, and ramp settings.
+    !
+    ! These values come from ice_init.F90 / forcing_nml, but are reported here
+    ! because this is where the tide forcing pathway is actually initialised.
+    if (my_task == master_task) then
+       write(nu_diag,*) subname//' loaded tide metadata from: ', trim(tide_data_file)
+       write(nu_diag,*) subname//' tide namelist settings:'
+       write(nu_diag,*) subname//'   tide_data_type             = ', trim(tide_data_type)
+       write(nu_diag,*) subname//'   tide_data_format           = ', trim(tide_data_format)
+       write(nu_diag,*) subname//'   tide_data_file             = ', trim(tide_data_file)
+       write(nu_diag,*) subname//'   tide_use_currents          = ', tide_use_currents
+       write(nu_diag,*) subname//'   tide_use_ssh               = ', tide_use_ssh
+       write(nu_diag,*) subname//'   tide_use_bathymetry_limit  = ', tide_use_bathymetry_limit
+       write(nu_diag,*) subname//'   tide_curr_fac              = ', tide_curr_fac
+       write(nu_diag,*) subname//'   tide_speed_cap [m/s]       = ', tide_speed_cap
+       write(nu_diag,*) subname//'   tide_wct_min [m]           = ', tide_wct_min
+       write(nu_diag,*) subname//'   tide_wct_full [m]          = ', tide_wct_full
+       write(nu_diag,*) subname//'   tide_h_eff_min [m]         = ', tide_h_eff_min
+       write(nu_diag,*) subname//'   tide_depth_mismatch        = ', tide_depth_mismatch
+       write(nu_diag,*) subname//'   tide_ramp_days [days]      = ', tide_ramp_days
+       if (tide_use_currents) then
+          write(nu_diag,*) subname//'   tidal currents are applied to ocean forcing'
+       else
+          write(nu_diag,*) subname//'   tidal currents are NOT applied'
+       endif
+       if (tide_use_ssh) then
+          write(nu_diag,*) subname//'   tidal SSH forcing is enabled'
+       else
+          write(nu_diag,*) subname//'   tidal SSH forcing is disabled'
+       endif
+       if (tide_use_bathymetry_limit) then
+          write(nu_diag,*) subname//'   bathymetry-aware current limiter is enabled'
+       else
+          write(nu_diag,*) subname//'   bathymetry-aware current limiter is disabled'
+       endif
+       write(nu_diag,*) subname//' tide metadata:'
+       write(nu_diag,*) subname//'   tide_nconst               = ', tide_nconst
+       write(nu_diag,*) subname//'   tide grid                 = ', tide_nj, tide_ni
+       write(nu_diag,*) subname//'   constituent_order         = ', trim(tide_constituent_order)
+       if (tide_nconst > 0) then
+          write(nu_diag,*) subname//'   omega(1) [rad/s]         = ', tide_omega(1)
+          write(nu_diag,*) subname//'   phase(1) [rad]           = ', tide_phase(1)
+          write(nu_diag,*) subname//'   alpha(1)                 = ', tide_alpha(1)
+          write(nu_diag,*) subname//'   amplitude(1)             = ', tide_amplitude(1)
+       endif
+    endif
+#endif
+  end subroutine init_tides_metadata
+  !=======================================================================
+  !=======================================================================
+  ! Allocate distributed tidal coefficient and limiter fields.
+  !
+  ! Spatial harmonic fields are stored on CICE distributed blocks:
+  !
+  !   tide_hRe/tide_hIm : complex SSH harmonic coefficients
+  !   tide_URe/tide_UIm : complex zonal/barotropic transport coefficients
+  !   tide_VRe/tide_VIm : complex meridional/barotropic transport coefficients
+  !   tide_wct          : water-column thickness from the tide product
+  !   tide_mask         : valid-ocean mask from the tide product
+  !   tide_depth_fac    : 0..1 reliability taper used before applying tides
+  !   tide_h_eff        : effective denominator used for transport/current
+  !                       conversion
+  !
+  ! Notes:
+  !   * These arrays are allocated once per run after metadata are known.
+  !   * They are zero-initialised so failed/partial reads do not leave stale
+  !     values in memory.
+  !   * The harmonic coefficient arrays retain a constituent dimension;
+  !     compute_tides_at_time() reconstructs instantaneous tides by summing
+  !     over that dimension.
+  !=======================================================================
+  subroutine alloc_tides_fields
+    integer (kind=int_kind) :: ierr
+    character(len=*), parameter :: subname = '(alloc_tides_fields)'
+    if (trim(tide_data_type) /= 'harmonic') return
+    if (.not. tide_metadata_loaded) then
+       call abort_ice(error_message=subname//' ERROR tide metadata not loaded', &
+            file=__FILE__, line=__LINE__)
+    endif
+    if (tide_fields_loaded) return
+    if (.not. allocated(tide_hRe)) then
+       allocate(tide_hRe      (nx_block,ny_block,max_blocks,tide_nconst), &
+                tide_hIm      (nx_block,ny_block,max_blocks,tide_nconst), &
+                tide_URe      (nx_block,ny_block,max_blocks,tide_nconst), &
+                tide_UIm      (nx_block,ny_block,max_blocks,tide_nconst), &
+                tide_VRe      (nx_block,ny_block,max_blocks,tide_nconst), &
+                tide_VIm      (nx_block,ny_block,max_blocks,tide_nconst), &
+                tide_wct      (nx_block,ny_block,max_blocks) , &
+                tide_mask     (nx_block,ny_block,max_blocks) , &
+                tide_depth_fac(nx_block,ny_block,max_blocks) , &
+                tide_h_eff    (nx_block,ny_block,max_blocks) , &
+                tide_u_raw         (nx_block,ny_block,max_blocks) , &
+                tide_v_raw         (nx_block,ny_block,max_blocks) , &
+                tide_speed_raw     (nx_block,ny_block,max_blocks) , &
+                tide_u_eff         (nx_block,ny_block,max_blocks) , &
+                tide_v_eff         (nx_block,ny_block,max_blocks) , &
+                tide_speed_eff     (nx_block,ny_block,max_blocks) , &
+                tide_speed_daymax  (nx_block,ny_block,max_blocks) , &
+                tide_speed_dayrms  (nx_block,ny_block,max_blocks) , &
+                tide_speed_daysum  (nx_block,ny_block,max_blocks) , &
+                tide_speed2_daysum (nx_block,ny_block,max_blocks) , &
+                tide_n_subday      (nx_block,ny_block,max_blocks) , &
+                tide_n_curr_over_fi(nx_block,ny_block,max_blocks) , &
+                tide_n_capped      (nx_block,ny_block,max_blocks) , &
+                 stat = ierr )
+       if (ierr /= 0) then
+          call abort_ice(error_message=subname//' ERROR allocating tide fields', &
+               file=__FILE__, line=__LINE__)
+       endif
+    endif
+    tide_hRe            = c0
+    tide_hIm            = c0
+    tide_URe            = c0
+    tide_UIm            = c0
+    tide_VRe            = c0
+    tide_VIm            = c0
+    tide_wct            = c0
+    tide_mask           = c0
+    tide_depth_fac      = c0
+    tide_h_eff          = c0
+    tide_u_raw          = c0
+    tide_v_raw          = c0
+    tide_speed_raw      = c0
+    tide_u_eff          = c0
+    tide_v_eff          = c0
+    tide_speed_eff      = c0
+    tide_speed_daymax   = c0
+    tide_speed_dayrms   = c0
+    tide_speed_daysum   = c0
+    tide_speed2_daysum  = c0
+    tide_n_subday       = c0
+    tide_n_curr_over_fi = c0
+    tide_n_capped       = c0
+    tide_diag_myear     = -9999
+    tide_diag_mmonth    = -9999
+    tide_diag_mday      = -9999
+  end subroutine alloc_tides_fields
+  !=======================================================================
+  !=======================================================================
+  ! Read and scatter harmonic tide coefficient fields.
+  !
+  ! This routine reads the full CICE_TMD3 tide coefficient file and scatters
+  ! global arrays onto the CICE decomposition. It also precomputes the
+  ! bathymetry-aware reliability limiter used later when converting tidal
+  ! transports to currents.
+  !
+  ! Input file expectations:
+  !   static 2D fields:
+  !      wct       : CATS/TMD water-column thickness [m]
+  !      cats_mask : valid tide-ocean mask
+  !
+  !   harmonic 3D fields:
+  !      hRe/hIm : real/imaginary SSH coefficients
+  !      URe/UIm : real/imaginary transport coefficients
+  !      VRe/VIm : real/imaginary transport coefficients
+  !
+  ! Important distinction:
+  !   init_tides_fields() does not compute tides at a model time. It only
+  !   loads the coefficient fields required for later harmonic prediction.
+  !
+  ! Physical interpretation:
+  !   The transport coefficients are retained as the primary tidal product.
+  !   The bathymetry/depth limiter is used later to avoid converting reliable
+  !   transports into unphysical currents in unresolved shallow or mismatched
+  !   coastal cells.
+  !=======================================================================
+  subroutine init_tides_fields
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use ice_gather_scatter, only: scatter_global
+  use ice_domain, only: distrb_info
+  use ice_grid, only: bathymetry, tmask
+  use ice_global_reductions, only: global_minval, global_maxval
+#ifdef USE_NETCDF
+  use netcdf, only: nf90_noerr, nf90_inq_varid, nf90_get_var, nf90_strerror
+#endif
+  integer (kind=int_kind) :: fid
+  real (kind=dbl_kind) :: bathy_min_global, bathy_max_global
+  character(len=*), parameter :: subname = '(init_tides_fields)'
+  if (trim(tide_data_type) /= 'harmonic') return
+  if (.not. tide_metadata_loaded) then
+     call abort_ice(error_message=subname//' ERROR tide metadata not loaded', &
+          file=__FILE__, line=__LINE__)
+  endif
+  if (.not. allocated(tide_hRe)) then
+     call abort_ice(error_message=subname//' ERROR tide fields not allocated', &
+          file=__FILE__, line=__LINE__)
+  endif
+  if (tide_fields_loaded) return
+#ifndef USE_NETCDF
+  call abort_ice(error_message=subname//' ERROR direct tide reads require USE_NETCDF', &
+       file=__FILE__, line=__LINE__)
+#else
+  if (my_task == master_task) then
+     write(nu_diag,*) subname//' len_trim(tide_data_file) = ', len_trim(tide_data_file)
+     write(nu_diag,*) subname//' tide_data_file = ', trim(tide_data_file)
+  endif
+  fid = -1
+  if (my_task == master_task) then
+     call ice_open_nc(trim(tide_data_file), fid)
+  endif
+  ! Static 2D fields from prototype file.
+  !
+  ! wct is the water-column thickness associated with the tide product.
+  ! It is the internally consistent denominator for converting CATS/TMD
+  ! barotropic transports to approximate depth-mean currents.
+  !
+  ! cats_mask marks cells where the tide product regards the coefficient
+  ! fields as valid ocean. It is combined later with the CICE tmask and,
+  ! optionally, the CICE bathymetry field.
+  call read_static_2d(fid, 'wct',       tide_wct)
+  call read_static_2d(fid, 'cats_mask', tide_mask)
+  ! Precompute depth/reliability factors once.
+  ! This avoids repeating bathymetry/wct/mask checks every timestep and
+  ! makes the current-limiting logic deterministic for the whole run.
+  call init_tide_depth_limiter
+  ! Harmonic 3D fields from prototype file.
+  !
+  ! The file stores complex harmonic coefficients as separate real and
+  ! imaginary arrays. At runtime, compute_tides_at_time() reconstructs the
+  ! instantaneous tide using:
+  !
+  !   X(t) = XRe*cos(omega*t + phase) - XIm*sin(omega*t + phase)
+  !
+  ! for each constituent and then sums over constituents.
+  call read_harmonic_3d(fid, 'hRe', tide_hRe)
+  call read_harmonic_3d(fid, 'hIm', tide_hIm)
+  call read_harmonic_3d(fid, 'URe', tide_URe)
+  call read_harmonic_3d(fid, 'UIm', tide_UIm)
+  call read_harmonic_3d(fid, 'VRe', tide_VRe)
+  call read_harmonic_3d(fid, 'VIm', tide_VIm)
+  if (my_task == master_task) then
+     call ice_close_nc(fid)
+  endif
+  tide_fields_loaded = .true.
+  ! These min/max values are local to master_task's owned blocks after
+  ! scattering, not global diagnostics. They are useful as smoke tests
+  ! that the fields are nonzero and finite, but should not be used as
+  ! domain-wide extrema.
+  if (my_task == master_task) then
+     write(nu_diag,*) subname//' loaded tide coefficient fields from: ', trim(tide_data_file)
+     write(nu_diag,*) subname//' master raw/scattered diagnostics complete'
+     write(nu_diag,*) subname//' tide_wct       local-block min/max = ', minval(tide_wct),       maxval(tide_wct)
+     write(nu_diag,*) subname//' tide_mask      local-block min/max = ', minval(tide_mask),      maxval(tide_mask)
+     write(nu_diag,*) subname//' tide_depth_fac local-block min/max = ', minval(tide_depth_fac), maxval(tide_depth_fac)
+     write(nu_diag,*) subname//' tide_h_eff     local-block min/max = ', minval(tide_h_eff),     maxval(tide_h_eff)
+     write(nu_diag,*) subname//' tide_hRe(1) local-block min/max = ', minval(tide_hRe(:,:,:,1)), maxval(tide_hRe(:,:,:,1))
+     write(nu_diag,*) subname//' tide_URe(1) local-block min/max = ', minval(tide_URe(:,:,:,1)), maxval(tide_URe(:,:,:,1))
+     write(nu_diag,*) subname//' tide_VRe(1) local-block min/max = ', minval(tide_VRe(:,:,:,1)), maxval(tide_VRe(:,:,:,1))
+  endif
+#endif
+contains
+  !---------------------------------------------------------------------
+  ! Precompute a bathymetry-aware reliability limiter for tidal currents.
+  !
+  ! The tide model provides barotropic transports. To apply these as CICE
+  ! ocean-current perturbations, the transports must be converted to
+  ! approximate currents using a water-column thickness.
+  !
+  ! Direct U/h conversion can produce unrealistically large currents where:
+  !   - the tide water-column thickness is very small,
+  !   - the regridded CATS/TMD coast does not exactly match the CICE coast,
+  !   - CICE bathymetry and CATS/TMD wct disagree strongly,
+  !   - narrow coastal/shelf features are unresolved at 1/4 degree.
+  !
+  ! This limiter addresses those issues by computing:
+  !
+  !   tide_depth_fac : 0..1 smooth taper applied to tide amplitude
+  !   tide_h_eff     : effective minimum depth used for U/h conversion
+  !
+  ! The emergency speed cap in compute_tides_at_time() remains as a final
+  ! guardrail, but should only catch rare pathological remnants after this
+  ! smoother bathymetry/wct treatment.
+  subroutine init_tide_depth_limiter
+    integer (kind=int_kind) :: i, j, iblk
+    integer (kind=int_kind) :: n_valid, n_tapered, n_zeroed, n_mismatch
+    real (kind=dbl_kind) :: h_cats, h_cice, h_reliable
+    real (kind=dbl_kind) :: xdep, depth_fac, mismatch_ratio
+    real (kind=dbl_kind), parameter :: eps_depth = 1.0e-12_dbl_kind
+    ! Check whether CICE bathymetry is available on ocean cells.
+    ! If tide_use_bathymetry_limit is true, bathymetry is part of the
+    ! physical limiter and a missing/zero field should be treated as a
+    ! configuration error rather than silently ignored.
+    bathy_min_global = global_minval(bathymetry, distrb_info, tmask)
+    bathy_max_global = global_maxval(bathymetry, distrb_info, tmask)
+    if (tide_use_bathymetry_limit .and. bathy_max_global <= c0) then
+       if (my_task == master_task) then
+          write(nu_diag,*) subname//' ERROR tide_use_bathymetry_limit is true but bathymetry appears unavailable'
+          write(nu_diag,*) subname//' bathymetry global min/max = ', bathy_min_global, bathy_max_global
+       endif
+       call abort_ice(error_message=subname//' bathymetry unavailable for tide limiter', &
+            file=__FILE__, line=__LINE__)
+    endif
+    if (tide_wct_full <= tide_wct_min) then
+       call abort_ice(error_message=subname//' ERROR tide_wct_full must be greater than tide_wct_min', &
+            file=__FILE__, line=__LINE__)
+    endif
+    if (tide_h_eff_min <= c0) then
+       call abort_ice(error_message=subname//' ERROR tide_h_eff_min must be positive', &
+            file=__FILE__, line=__LINE__)
+    endif
+    tide_depth_fac = c0
+    tide_h_eff     = c0
+    ! integer counts
+    n_valid        = 0
+    n_tapered      = 0
+    n_zeroed       = 0
+    n_mismatch     = 0
+    do iblk = 1, max_blocks
+       do j = 1, ny_block
+          do i = 1, nx_block
+             h_cats = max(c0, tide_wct(i,j,iblk))
+             if (tide_use_bathymetry_limit) then
+                h_cice     = max(c0, bathymetry(i,j,iblk))
+                ! Conservative reliability depth.
+                ! h_cats comes from the tide product and is internally
+                ! consistent with the CATS/TMD transport coefficients.
+                ! h_cice comes from the active CICE grid/bathymetry and
+                ! reflects the model cell in which the current will be applied.
+                ! Taking min(h_cats,h_cice) means either product can flag a
+                ! cell as shallow/unreliable. This is intentionally conservative
+                ! near the Antarctic coast, where grid and mask mismatches are
+                ! most likely.
+                h_reliable = min(h_cats, h_cice)
+             else
+                h_cice = h_cats
+                h_reliable = h_cats
+             endif
+             ! A cell receives tidal-current forcing only if:
+             !   1. it is ocean in the CICE grid       : tmask
+             !   2. it is valid in the tide product    : tide_mask > 0.5
+             !   3. the conservative reliable depth is deeper than the
+             !      minimum allowed depth              : h_reliable > tide_wct_min
+             ! Otherwise all tidal forcing is zeroed in that cell.
+             if (tmask(i,j,iblk) .and. tide_mask(i,j,iblk) > p5 .and. h_reliable > tide_wct_min) then
+                ! Non-dimensional depth coordinate for the taper:
+                !   xdep = 0 at tide_wct_min
+                !   xdep = 1 at tide_wct_full
+                ! Cells shallower than tide_wct_min receive no tide-current
+                ! forcing. Cells deeper than tide_wct_full receive full
+                ! forcing, subject to tide_curr_fac and the emergency cap.
+                xdep = (h_reliable - tide_wct_min) / max(eps_depth, tide_wct_full - tide_wct_min)
+                xdep = max(c0, min(c1, xdep))
+                ! Smooth 0..1 taper using "smootherstep":
+                !   depth_fac = x^3 * (10 - 15x + 6x^2)
+                ! This gives zero slope at both endpoints, avoiding abrupt
+                ! spatial jumps in tidal current amplitude near the shallow
+                ! cutoff. That is preferable to a hard on/off mask at the
+                ! continental shelf/coastal boundary.
+                depth_fac                = xdep**3 * (10.0_dbl_kind - 15.0_dbl_kind*xdep + 6.0_dbl_kind*xdep**2)
+                tide_depth_fac(i,j,iblk) = depth_fac
+                ! Effective depth used in transport-to-current conversion.
+                ! We keep h_cats as the primary denominator because the
+                ! transport coefficients and wct come from the same tide
+                ! product. However, we impose tide_h_eff_min so that a small
+                ! or noisy wct does not create extreme currents through U/h.
+                ! Note: tide_depth_fac handles reliability/tapering;
+                ! tide_h_eff handles the numerical magnitude of U/h.
+                tide_h_eff(i,j,iblk) = max(h_cats, tide_h_eff_min)
+                n_valid = n_valid + 1
+                if (depth_fac < c1) n_tapered = n_tapered + 1
+                ! Diagnostic only: count cells where CATS/TMD wct and CICE
+                ! bathymetry differ by more than tide_depth_mismatch.
+                ! These cells are not automatically zeroed by this test;
+                ! the mismatch count is intended to help interpret later
+                ! diagnostics and identify problematic coastal regions.
+                if (tide_use_bathymetry_limit .and. h_cats > c0 .and. h_cice > c0) then
+                   mismatch_ratio = max(h_cats, h_cice) / max(eps_depth, min(h_cats, h_cice))
+                   if (mismatch_ratio > tide_depth_mismatch) n_mismatch = n_mismatch + 1
+                endif
+             else
+                tide_depth_fac(i,j,iblk) = c0
+                tide_h_eff(i,j,iblk)     = c0
+                n_zeroed = n_zeroed + 1
+             endif
+          enddo
+       enddo
+    enddo
+    ! Report limiter settings and local counts:
+    ! Counts are local to master_task's block ownership unless explicitly
+    ! reduced elsewhere. Treat them as useful run fingerprints, not global
+    ! cell totals. For publication-quality diagnostics, add global reductions.
+    if (my_task == master_task) then
+       write(nu_diag,*) subname//' tide depth limiter settings:'
+       write(nu_diag,*) subname//'   tide_use_bathymetry_limit = ', tide_use_bathymetry_limit
+       write(nu_diag,*) subname//'   tide_wct_min/full         = ', tide_wct_min, tide_wct_full
+       write(nu_diag,*) subname//'   tide_h_eff_min            = ', tide_h_eff_min
+       write(nu_diag,*) subname//'   tide_depth_mismatch       = ', tide_depth_mismatch
+       write(nu_diag,*) subname//'   bathymetry global min/max  = ', bathy_min_global, bathy_max_global
+       write(nu_diag,*) subname//' tide depth limiter local counts valid/tapered/zeroed/mismatch = ', &
+                         n_valid, n_tapered, n_zeroed, n_mismatch
+    endif
+
+  end subroutine init_tide_depth_limiter
+  !---------------------------------------------------------------------
+  ! Replace NaN/Inf values read from NetCDF with zero.
+  !
+  ! This is a defensive read-time sanitation step. It prevents isolated
+  ! missing or invalid coefficient values from poisoning the harmonic sum
+  ! and producing NaN currents/stresses later in the dynamics.
+  !
+  ! A zero here means "do not apply tidal contribution from this invalid
+  ! coefficient value"; it does not fix upstream data quality issues.
+  subroutine sanitize2d(a)
+    real (kind=dbl_kind), intent(inout) :: a(:,:)
+    where (.not. ieee_is_finite(a)) a = c0
+  end subroutine sanitize2d
+  !---------------------------------------------------------------------
+  subroutine sanitize3d(a)
+    real (kind=dbl_kind), intent(inout) :: a(:,:,:)
+    where (.not. ieee_is_finite(a)) a = c0
+  end subroutine sanitize3d
+  !---------------------------------------------------------------------
+  ! Read a static 2D tide field on master_task and scatter to CICE blocks.
+  !
+  ! File/global convention:
+  !   The preprocessed CICE_TMD3 file is expected to be on the CICE T-grid
+  !   with dimensions compatible with nx_global, ny_global.
+  !
+  ! Parallel convention:
+  !   master_task reads the global field, sanitises it, then scatter_global()
+  !   distributes it to the local block decomposition used by CICE.
+  !
+  ! These fields have no constituent dimension.
+  subroutine read_static_2d(fid, varname, dest)
+    integer (kind=int_kind), intent(in) :: fid
+    character(len=*), intent(in) :: varname
+    real (kind=dbl_kind), dimension(nx_block,ny_block,max_blocks), intent(out) :: dest
+    integer (kind=int_kind) :: ierr, varid
+    real (kind=dbl_kind), allocatable :: g2(:,:)   ! Fortran/global order: (ni,nj)
+    ! Only master_task needs a full global work array.
+    ! Non-master ranks allocate a tiny dummy array so the scatter interface
+    ! can be called uniformly on all tasks.
+    if (my_task == master_task) then
+       allocate(g2(nx_global,ny_global))
+    else
+       allocate(g2(1,1))
+    endif
+    g2 = c0
+    if (my_task == master_task) then
+       ierr = nf90_inq_varid(fid, trim(varname), varid)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR missing var '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       ierr = nf90_get_var(fid, varid, g2)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR reading '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+       call sanitize2d(g2)
+       write(nu_diag,*) subname//' raw ', trim(varname), ' min/max = ', minval(g2), maxval(g2)
+    endif
+    ! Scatter from global Fortran-order array to local CICE blocks.
+    ! These tide fields are T-grid scalar fields, so use field_loc_center
+    ! and field_type_scalar.
+    call scatter_global(dest, g2, master_task, distrb_info, &
+         field_loc_center, field_type_scalar)
+    deallocate(g2)
+  end subroutine read_static_2d
+  !---------------------------------------------------------------------
+  ! Read a harmonic 3D tide field constituent-by-constituent and scatter.
+  !
+  ! The NetCDF variable is conceptually:
+  !
+  !   var(constituents, nj, ni)
+  !
+  ! but the Fortran NetCDF interface presents the storage order such that
+  ! the slab read below uses:
+  !
+  !   start = (/1, 1, n/)
+  !   count = (/nx_global, ny_global, 1/)
+  !
+  ! Each constituent is read into a 2D global work array, sanitised, and
+  ! scattered into dest(:,:,:,n).
+  !
+  ! This avoids holding an additional full global 3D field in memory.
+  subroutine read_harmonic_3d(fid, varname, dest)
+    integer (kind=int_kind), intent(in) :: fid
+    character(len=*), intent(in) :: varname
+    real (kind=dbl_kind), dimension(nx_block,ny_block,max_blocks,tide_nconst), intent(out) :: dest
+    integer (kind=int_kind) :: ierr, varid, n
+    real (kind=dbl_kind), allocatable :: g2(:,:)   ! Fortran/global order: (ni,nj)
+    if (my_task == master_task) then
+       allocate(g2(nx_global,ny_global))
+    else
+       allocate(g2(1,1))
+    endif
+    g2 = c0
+    if (my_task == master_task) then
+       ierr = nf90_inq_varid(fid, trim(varname), varid)
+       if (ierr /= nf90_noerr) then
+          call abort_ice(error_message=subname//' ERROR missing var '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
+               file=__FILE__, line=__LINE__)
+       endif
+    endif
+    ! Print only constituent 1 as a compact smoke test.
+    ! Full constituent-by-constituent diagnostics would be verbose
+    ! and expensive in ice_diag.d.
+    do n = 1, tide_nconst
+       g2 = c0
+       if (my_task == master_task) then
+          ! File variable is hRe(constituents,nj,ni)
+          ! Fortran netCDF view is effectively (ni,nj,constituents)
+          ierr = nf90_get_var(fid, varid, g2, &
+                              start=(/1,1,n/), &
+                              count=(/nx_global,ny_global,1/))
+          if (ierr /= nf90_noerr) then
+             write(nu_diag,*) subname//' ERROR reading ', trim(varname), ' constituent n = ', n
+             write(nu_diag,*) subname//' attempted start = (/ 1, 1, ', n, ' /)'
+             write(nu_diag,*) subname//' attempted count = (/ ', nx_global, ', ', ny_global, ', 1 /)'
+             call abort_ice(error_message=subname//' ERROR reading '//trim(varname)//': '//trim(nf90_strerror(ierr)), &
+                  file=__FILE__, line=__LINE__)
+          endif
+          call sanitize2d(g2)
+          if (n == 1) then
+             write(nu_diag,*) subname//' raw ', trim(varname), '(1) min/max = ', minval(g2), maxval(g2)
+          endif
+       endif
+       call scatter_global(dest(:,:,:,n), g2, master_task, distrb_info, &
+            field_loc_center, field_type_scalar)
+    enddo
+    deallocate(g2)
+  end subroutine read_harmonic_3d
+  end subroutine init_tides_fields
+  !=======================================================================
+  subroutine reset_tide_current_diagnostics_if_needed
+
+    character(len=*), parameter :: subname = '(reset_tide_current_diagnostics_if_needed)'
+
+    if (.not. allocated(tide_speed_eff)) return
+
+    if (tide_diag_myear  /= myear  .or. &
+        tide_diag_mmonth /= mmonth .or. &
+        tide_diag_mday   /= mday) then
+
+       tide_speed_daymax   = c0
+       tide_speed_dayrms   = c0
+       tide_speed_daysum   = c0
+       tide_speed2_daysum  = c0
+       tide_n_subday       = c0
+       tide_n_curr_over_fi = c0
+       tide_n_capped       = c0
+
+       tide_diag_myear  = myear
+       tide_diag_mmonth = mmonth
+       tide_diag_mday   = mday
+
+       if (debug_forcing .and. my_task == master_task) then
+          write(nu_diag,*) subname//' reset diagnostics for date = ', &
+               tide_diag_myear, tide_diag_mmonth, tide_diag_mday
+       endif
+    endif
+
+  end subroutine reset_tide_current_diagnostics_if_needed
+
+  !=======================================================================
+  subroutine update_tide_current_diagnostics(i, j, iblk, u_raw, v_raw, u_eff, v_eff)
+
+    integer (kind=int_kind), intent(in) :: i, j, iblk
+    real    (kind=dbl_kind), intent(in) :: u_raw, v_raw
+    real    (kind=dbl_kind), intent(in) :: u_eff, v_eff
+
+    real (kind=dbl_kind) :: speed_raw
+    real (kind=dbl_kind) :: speed_eff
+
+    if (.not. allocated(tide_speed_eff)) return
+
+    speed_raw = sqrt(u_raw*u_raw + v_raw*v_raw)
+    speed_eff = sqrt(u_eff*u_eff + v_eff*v_eff)
+
+    tide_u_raw    (i,j,iblk) = u_raw
+    tide_v_raw    (i,j,iblk) = v_raw
+    tide_speed_raw(i,j,iblk) = speed_raw
+
+    tide_u_eff    (i,j,iblk) = u_eff
+    tide_v_eff    (i,j,iblk) = v_eff
+    tide_speed_eff(i,j,iblk) = speed_eff
+
+    tide_speed_daymax (i,j,iblk) = max(tide_speed_daymax(i,j,iblk), speed_eff)
+    tide_speed_daysum (i,j,iblk) = tide_speed_daysum(i,j,iblk)  + speed_eff
+    tide_speed2_daysum(i,j,iblk) = tide_speed2_daysum(i,j,iblk) + speed_eff*speed_eff
+    tide_n_subday     (i,j,iblk) = tide_n_subday(i,j,iblk)      + c1
+
+    tide_speed_dayrms(i,j,iblk) = sqrt( &
+         tide_speed2_daysum(i,j,iblk) / max(tide_n_subday(i,j,iblk), c1) )
+
+    if (speed_eff > tide_curr_diag_thresh) then
+       tide_n_curr_over_fi(i,j,iblk) = tide_n_curr_over_fi(i,j,iblk) + c1
+    endif
+
+  end subroutine update_tide_current_diagnostics
+  !=======================================================================
+  ! Compute instantaneous tidal SSH, transports, and current perturbations.
+  !
+  ! This routine is called during forcing updates. It reconstructs the
+  ! instantaneous harmonic tide at the current model time and converts
+  ! barotropic transports into approximate depth-mean tidal currents.
+  !
+  ! Output fields:
+  !   eta_tide  : tidal sea-surface height perturbation after limiter/ramp
+  !   Utide_tr  : tidal U transport after limiter/ramp/cap
+  !   Vtide_tr  : tidal V transport after limiter/ramp/cap
+  !   utide_cur : tidal u-current perturbation applied to ocean forcing
+  !   vtide_cur : tidal v-current perturbation applied to ocean forcing
+  !
+  ! Physical pathway:
+  !   harmonic coefficients
+  !        -> instantaneous tidal SSH/transports
+  !        -> bathymetry/wct reliability limiter
+  !        -> transport-to-current conversion
+  !        -> branch-start amplitude ramp
+  !        -> emergency current cap
+  !        -> ocean-current perturbation seen by CICE dynamics
+  !
+  ! Important distinction:
+  !   tsec_ref is the absolute harmonic phase clock relative to the CATS/TMD
+  !   reference epoch. It must NOT be reset at restart.
+  !
+  !   tide_ramp_t0_sec is the branch/run start time used only for gradually
+  !   increasing the forcing amplitude. It deliberately starts from the first
+  !   call in this branch run.
+  !=======================================================================
+  subroutine compute_tides_at_time(eta_tide, Utide_tr, Vtide_tr, utide_cur, vtide_cur)
+    integer (kind=int_kind) :: n, i, j, iblk
+    integer (kind=int_kind) :: days_since_ref
+    real    (kind=dbl_kind) :: tsec_ref
+    real    (kind=dbl_kind) :: arg, carg, sarg
+    real    (kind=dbl_kind) :: ramp
+    real    (kind=dbl_kind) :: spd, sf
+    integer (kind=int_kind) :: n_capped
+    real (kind=dbl_kind), dimension(nx_block,ny_block,max_blocks), intent(out) :: &
+         eta_tide, Utide_tr, Vtide_tr, utide_cur, vtide_cur
+    logical(kind=log_kind), save :: tide_ramp_initialized = .false.
+    real(kind=dbl_kind),    save :: tide_ramp_t0_sec = c0
+    real(kind=dbl_kind)          :: tsec_run, x
+    real(kind=dbl_kind), parameter :: pi_local = 3.1415926535897932384626433832795_dbl_kind
+    character(len=*), parameter :: subname = '(compute_tides_at_time)'
+    if (trim(tide_data_type) /= 'harmonic') then
+       eta_tide  = c0
+       Utide_tr  = c0
+       Vtide_tr  = c0
+       utide_cur = c0
+       vtide_cur = c0
+       return
+    endif
+    if (.not. tide_metadata_loaded) then
+       call abort_ice(error_message=subname//' ERROR tide metadata not loaded', &
+            file=__FILE__, line=__LINE__)
+    endif
+    if (.not. tide_fields_loaded) then
+       call abort_ice(error_message=subname//' ERROR tide fields not loaded', &
+            file=__FILE__, line=__LINE__)
+    endif
+    if (allocated(tide_speed_eff)) then
+       if (tide_diag_myear  /= myear  .or. &
+            tide_diag_mmonth /= mmonth .or. &
+            tide_diag_mday   /= mday) then
+
+          tide_speed_daymax   = c0
+          tide_speed_dayrms   = c0
+          tide_speed_daysum   = c0
+          tide_speed2_daysum  = c0
+          tide_n_subday       = c0
+          tide_n_curr_over_fi = c0
+          tide_n_capped       = c0
+
+          tide_diag_myear  = myear
+          tide_diag_mmonth = mmonth
+          tide_diag_mday   = mday
+       endif
+    endif
+    ! Absolute harmonic phase clock.
+    ! CATS/TMD phase metadata are referenced to 1992-01-01 00:00:00.
+    ! This clock is used only to evaluate cos(omega*t + phase) and must
+    ! remain tied to the tidal reference epoch, not to the CICE restart date.
+    days_since_ref = compute_days_between(1992, 1, 1, myear, mmonth, mday)
+    tsec_ref       = real(days_since_ref, kind=dbl_kind) * 86400.0_dbl_kind + real(msec, kind=dbl_kind)
+    eta_tide       = c0
+    Utide_tr       = c0
+    Vtide_tr       = c0
+    utide_cur      = c0
+    vtide_cur      = c0
+    call reset_tide_current_diagnostics_if_needed
+    ! Reconstruct instantaneous harmonic tide by summing all constituents.
+    ! For each complex coefficient X = XRe + i XIm, the real-valued tide is:
+    !   X(t) = XRe*cos(arg) - XIm*sin(arg)
+    ! where arg = omega*t + phase.
+    ! eta_tide is SSH-like. Utide_tr and Vtide_tr are barotropic transports,
+    ! not currents yet.
+    do n = 1, tide_nconst
+       arg  = tide_omega(n) * tsec_ref + tide_phase(n)
+       carg = cos(arg)
+       sarg = sin(arg)
+       eta_tide(:,:,:) = eta_tide(:,:,:) + tide_hRe(:,:,:,n) * carg - tide_hIm(:,:,:,n) * sarg
+       Utide_tr(:,:,:) = Utide_tr(:,:,:) + tide_URe(:,:,:,n) * carg - tide_UIm(:,:,:,n) * sarg
+       Vtide_tr(:,:,:) = Vtide_tr(:,:,:) + tide_VRe(:,:,:,n) * carg - tide_VIm(:,:,:,n) * sarg
+    enddo
+    ! Convert transports to approximate tidal currents.
+    !
+    ! The tide product supplies barotropic transports. For CICE ocean forcing
+    ! we need current perturbations, so we divide by tide_h_eff.
+    !
+    !   utide_cur = tide_curr_fac * tide_depth_fac * Utide_tr / tide_h_eff
+    !   vtide_cur = tide_curr_fac * tide_depth_fac * Vtide_tr / tide_h_eff
+    !
+    ! tide_depth_fac:
+    !   0..1 reliability taper precomputed from tide_wct, CICE bathymetry,
+    !   CICE tmask, and cats_mask.
+    !
+    ! tide_h_eff:
+    !   effective water-column thickness. It is based on CATS/TMD wct but
+    !   bounded below by tide_h_eff_min to avoid U/h blow-ups.
+    !
+    ! Applying tide_depth_fac to eta_tide, Utide_tr, and Vtide_tr keeps the
+    ! diagnostic output consistent with the actual applied current forcing.
+    where (tide_depth_fac > c0 .and. tide_h_eff > c0)
+       utide_cur = tide_curr_fac * tide_depth_fac * (Utide_tr / tide_h_eff)
+       vtide_cur = tide_curr_fac * tide_depth_fac * (Vtide_tr / tide_h_eff)
+       eta_tide  = tide_depth_fac * eta_tide
+       Utide_tr  = tide_depth_fac * Utide_tr
+       Vtide_tr  = tide_depth_fac * Vtide_tr
+    elsewhere
+       eta_tide  = c0
+       Utide_tr  = c0
+       Vtide_tr  = c0
+       utide_cur = c0
+       vtide_cur = c0
+    end where
+    ! Save converted current before branch-start ramp and emergency cap.
+    tide_u_raw     = utide_cur
+    tide_v_raw     = vtide_cur
+    tide_speed_raw = sqrt(utide_cur*utide_cur + vtide_cur*vtide_cur)
+    ! Smooth amplitude ramp from the start of this branch run.
+    ! Do not use tsec_ref directly for the ramp, because tsec_ref is measured
+    ! from the 1992 tide reference epoch. If used directly, any 1993/1994
+    ! restart would begin with ramp=1 and the ramp would do nothing.
+    ! The first call defines tide_ramp_t0_sec. The ramp clock is therefore:
+    !   tsec_run = tsec_ref - tide_ramp_t0_sec
+    ! The half-cosine ramp:
+    !   ramp = 0.5 * (1 - cos(pi*x))
+    ! has zero slope at the start and end, reducing the chance of shocking
+    ! the momentum balance when tides are activated.
+    if (.not. tide_ramp_initialized) then
+       tide_ramp_t0_sec      = tsec_ref
+       tide_ramp_initialized = .true.
+    endif
+    tsec_run = max(c0, tsec_ref - tide_ramp_t0_sec)
+    if (tide_ramp_days > c0) then
+       x = min(c1, tsec_run / (tide_ramp_days * 86400.0_dbl_kind))
+       ! Half-cosine ramp: zero slope at start and end.
+       ramp = p5 * (c1 - cos(pi_local * x))
+    else
+       ramp = c1
+    endif
+    eta_tide  = ramp * eta_tide
+    Utide_tr  = ramp * Utide_tr
+    Vtide_tr  = ramp * Vtide_tr
+    utide_cur = ramp * utide_cur
+    vtide_cur = ramp * vtide_cur
+    ! Save pre-cap tidal current diagnostics.
+    if (allocated(tide_speed_eff)) then
+       tide_u_raw     = utide_cur
+       tide_v_raw     = vtide_cur
+       tide_speed_raw = sqrt(tide_u_raw*tide_u_raw + tide_v_raw*tide_v_raw)
+    endif
+    ! Emergency cap on tidal current vector speed.
+    ! This is not intended to be the primary physical limiter. The main
+    ! physical/numerical control is the bathymetry/wct taper above.
+    ! The cap catches any remaining pathological cells after the smoother
+    ! limiter and effective-depth conversion. If n_capped is large, the
+    ! experiment is still being controlled by the cap and the limiter settings
+    ! should be revisited.
+    ! n_capped is local to this MPI task. The debug print on master_task is
+    ! therefore a smoke test, not a global capped-cell count.
+    n_capped = 0
+    if (tide_speed_cap > c0) then
+       do iblk = 1, max_blocks
+          do j = 1, ny_block
+             do i = 1, nx_block
+                spd = sqrt(utide_cur(i,j,iblk)**2 + vtide_cur(i,j,iblk)**2)
+                if (spd > tide_speed_cap .and. spd > c0) then
+                   sf                  = tide_speed_cap / spd
+                   utide_cur(i,j,iblk) = utide_cur(i,j,iblk) * sf
+                   vtide_cur(i,j,iblk) = vtide_cur(i,j,iblk) * sf
+                   Utide_tr(i,j,iblk)  = Utide_tr(i,j,iblk)  * sf
+                   Vtide_tr(i,j,iblk)  = Vtide_tr(i,j,iblk)  * sf
+                   n_capped            = n_capped + 1
+                   if (allocated(tide_n_capped)) then
+                      tide_n_capped(i,j,iblk) = tide_n_capped(i,j,iblk) + c1
+                   endif
+                endif
+             enddo
+          enddo
+       enddo
+    endif
+    ! Save final applied tidal current diagnostics.
+    if (allocated(tide_speed_eff)) then
+       tide_u_eff     = utide_cur
+       tide_v_eff     = vtide_cur
+       tide_speed_eff = sqrt(tide_u_eff*tide_u_eff + tide_v_eff*tide_v_eff)
+       tide_speed_daymax  = max(tide_speed_daymax, tide_speed_eff)
+       tide_speed_daysum  = tide_speed_daysum  + tide_speed_eff
+       tide_speed2_daysum = tide_speed2_daysum + tide_speed_eff*tide_speed_eff
+       tide_n_subday      = tide_n_subday      + c1
+       tide_speed_dayrms = sqrt(tide_speed2_daysum / max(tide_n_subday, c1))
+       where (tide_speed_eff > tide_curr_diag_thresh)
+          tide_n_curr_over_fi = tide_n_curr_over_fi + c1
+       end where
+    endif
+    if (debug_forcing .and. my_task == master_task) then
+       write(nu_diag,*) subname//' date/time         = ', myear, mmonth, mday, msec
+       write(nu_diag,*) subname//' tsec_ref          = ', tsec_ref
+       write(nu_diag,*) subname//' ramp              = ', ramp
+       write(nu_diag,*) subname//' tide_curr_fac,    = ', tide_curr_fac
+       write(nu_diag,*) subname//' tide_speed_cap    = ', tide_speed_cap
+       write(nu_diag,*) subname//' n_capped local    = ', n_capped
+       write(nu_diag,*) subname//' eta_tide  min/max = ', minval(eta_tide),  maxval(eta_tide)
+       write(nu_diag,*) subname//' Utide_tr  min/max = ', minval(Utide_tr),  maxval(Utide_tr)
+       write(nu_diag,*) subname//' Vtide_tr  min/max = ', minval(Vtide_tr),  maxval(Vtide_tr)
+       write(nu_diag,*) subname//' utide_cur min/max = ', minval(utide_cur), maxval(utide_cur)
+       write(nu_diag,*) subname//' vtide_cur min/max = ', minval(vtide_cur), maxval(vtide_cur)
+    endif
+  end subroutine compute_tides_at_time
+  !=======================================================================
 
   !=======================================================================
   subroutine ocn_freezing_temperature
@@ -522,8 +1758,9 @@ contains
     ! Read and interpolate atmospheric data
     !-------------------------------------------------------------------
     if (local_debug .and. my_task == master_task) then
-       write(nu_diag,*) subname,'fdbg fyear = ',fyear
-       write(nu_diag,*) subname,'fdbg atm_data_type = ',trim(atm_data_type)
+       write(nu_diag,*) subname,' fyear         : ',fyear
+       write(nu_diag,*) subname,' atm_data_type : ',trim(atm_data_type)
+       write(nu_diag,*) subname,' msec          : ',int(msec)
     endif
     if (trim(atm_data_type) == 'ncar') then
        call ncar_data
@@ -556,10 +1793,7 @@ contains
     elseif (trim(atm_data_type) == 'hycom') then
        call hycom_atm_data
     elseif (trim(atm_data_type) == 'ERA5') then
-       if(my_task.eq.master_task) write(nu_diag,*) subname,' msec    : ',int(msec)
-       if(my_task.eq.master_task) write(nu_diag,*) subname,' calling ERA5_data'
        call ERA5_data
-       if(my_task.eq.master_task) write(nu_diag,*) subname,''
     else    ! default values set in init_flux
        return
     endif
@@ -619,22 +1853,31 @@ contains
     use ice_domain, only             :  nblocks, blocks_ice, distrb_info
     use ice_grid, only               :  tmask, umask
     use ice_global_reductions, only  :  global_minval, global_maxval
-    use ice_flux, only               :  sss, sst, Tf, uocn, vocn
+    use ice_flux, only               :  sss, sst, Tf, uocn, vocn, ss_tltx, ss_tlty
     integer (kind=int_kind)          :: i, j, iblk, &      ! block index
                                         ilo,ihi,jlo,jhi, & ! beginning and end of physical domain
                                         modadj, &          ! adjustment to make mod a postive number
-                                        fyear_old, &       ! fyear setting on last timestep
-                                        call_AFIM_data     ! 1 is yes, 0 is no
+                                        fyear_old          ! fyear setting on last timestep
     type (block)                     :: this_block
     real (kind=dbl_kind), intent(in) :: dt
     real (kind=dbl_kind)             :: vmin, vmax, dayfrac, weekfrac, monthfrac, secday
+    real (kind=dbl_kind), dimension(nx_block,ny_block,max_blocks) :: &
+         eta_tide, Utide_tr, Vtide_tr, utide_cur, vtide_cur
     character(len=*), parameter      :: subname = '(get_forcing_ocn)'
     call icepack_query_parameters(secday_out=secday)
     if (local_debug .and. my_task == master_task) write(nu_diag,*) subname,' fdbg start'
     call ice_timer_start(timer_forcing)
+    fyear_old = fyear
+    modadj    = abs((min(0,myear-fyear_init)/ycycle+1)*ycycle)
+    fyear     = fyear_init + mod(myear-fyear_init+modadj,ycycle)
+    if (trim(atm_data_type) /= 'default' .and. (istep <= 1 .or. fyear /= fyear_old)) then
+       if (my_task == master_task) then
+          write (nu_diag,*) ' Set current forcing data year = ',fyear
+       endif
+    endif
     if (local_debug .and. my_task == master_task) then
-       write(nu_diag,*) subname,' fdbg fyear = ',fyear
-       write(nu_diag,*) subname,' fdbg ocn_data_type = ',trim(ocn_data_type)
+       write(nu_diag,*) subname,' fyear         : ',fyear
+       write(nu_diag,*) subname,' ocn_data_type : ',trim(ocn_data_type)
     endif
     if (trim(ocn_data_type) == 'clim') then
        call ocn_data_clim(dt)
@@ -659,29 +1902,18 @@ contains
     elseif (trim(ocn_data_type) == 'calm') then
        call uniform_data_ocn('N',c0) ! directon does not matter for c0
     elseif (trim(ocn_data_type) == 'AFIM') then
-       call_AFIM_data = 0
-       dayfrac        = 1
-       weekfrac       = 1
-       monthfrac      = 1
-       if (trim(ocn_data_freq) == 'daily') then
-          dayfrac = mod(real(msec/secday),real(secday))
-          if(dayfrac==0.5) call_AFIM_data = 1
-       elseif (trim(ocn_data_freq) == 'weekly') then
-          weekfrac = mod(int(mday),int(7))
-          if(weekfrac==0) call_AFIM_data = 1
-       elseif (trim(ocn_data_freq) == 'monthly') then
-          if(int(mday)==int(15)) call_AFIM_data = 1
-       endif
-       if (call_AFIM_data==1.and.((real(msec/secday))>0.48.and.(real(msec/secday))<0.52)) then
-          fyear_old = fyear
-          modadj    = abs((min(0,myear-fyear_init)/ycycle+1)*ycycle)
-          fyear     = fyear_init + mod(myear-fyear_init+modadj,ycycle)
-          if(my_task.eq.master_task) write(nu_diag,*) subname,' yday    : ',int(yday)
-          if(my_task.eq.master_task) write(nu_diag,*) subname,' mday    : ',int(mday)
-          if(my_task.eq.master_task) write(nu_diag,*) subname,' msec    : ',int(msec)
-          if(my_task.eq.master_task) write(nu_diag,*) subname,' calling AFIM_data'
-          call AFIM_data(dt)
-          if(my_task.eq.master_task) write(nu_diag,*) subname,' '
+       call AFIM_data(dt)
+       if (trim(tide_data_type) == 'harmonic') then
+          call compute_tides_at_time(eta_tide, Utide_tr, Vtide_tr, utide_cur, vtide_cur)
+          if (tide_use_currents) then
+             uocn(:,:,:) = uocn(:,:,:) + utide_cur(:,:,:)
+             vocn(:,:,:) = vocn(:,:,:) + vtide_cur(:,:,:)
+          endif
+          ! v1: keep SSH coupling disabled until currents are stable
+          if (tide_use_ssh) then
+             ss_tltx(:,:,:) = c0
+             ss_tlty(:,:,:) = c0
+          endif
        endif
     endif
     call ice_timer_stop(timer_forcing)
@@ -1163,28 +2395,6 @@ contains
   end subroutine interpolate_data
 
   !=======================================================================
-  ! subroutine file_year_atm (data_file, yr)
-  !   ! Construct the correct name of the atmospheric data file
-  !   ! to be read, given the year and assuming the naming convention
-  !   ! that filenames end with 'yyyy.dat' or 'yyyy.r' or 'yyyy.nc'.
-  !   character(char_len_long), intent(inout) :: data_file
-  !   integer(kind=int_kind),   intent(in)    :: yr
-  !   character(char_len_long)                :: tmpname
-  !   integer(kind=int_kind)                  :: i
-  !   character(len=*),         parameter     :: subname = '(file_year_atm)'
-  !   if ( trim(atm_data_type) == 'hadgem'    .or. trim(atm_data_type) == 'JRA55_gx1' .or. &
-  !        trim(atm_data_type) == 'JRA55_gx3' .or. trim(atm_data_type) == 'JRA55_tx1' .or. &
-  !        trim(atm_data_type) == 'ERA5') then ! netcdf
-  !      i       = index(data_file,'.nc') - 5
-  !      tmpname = data_file
-  !      write(data_file,'(a,i4.4,a)') tmpname(1:i), yr, '.nc'
-  !   else                                     ! LANL/NCAR naming convention
-  !      i = index(data_file,'.dat') - 5
-  !      tmpname = data_file
-  !      write(data_file,'(a,i4.4,a)') tmpname(1:i), yr, '.dat'
-  !   endif
-  ! end subroutine file_year_atm
-
   subroutine file_year_atm(data_file, yr)
     character(char_len_long), intent(inout) :: data_file
     integer(kind=int_kind),   intent(in)    :: yr
@@ -1199,6 +2409,7 @@ contains
        call abort_ice(error_message=subname//' ERROR: could not find underscore in base name', file=__FILE__, line=__LINE__)
     endif
   end subroutine file_year_atm 
+
   !=======================================================================
   subroutine file_year_ocn(data_file, fyr)
     character(char_len_long), intent(inout) :: data_file
@@ -1210,6 +2421,8 @@ contains
     tmpname = data_file
     write(data_file, '(a,i4.4,a)') trim(tmpname(1:i-1)), fyr, '.nc'
   end subroutine file_year_ocn
+
+  !=======================================================================
   subroutine file_year_append(data_file, year)
     character(char_len_long), intent(inout) :: data_file
     integer(kind=int_kind),   intent(in)    :: year
@@ -1224,7 +2437,6 @@ contains
        call abort_ice(error_message=subname//' ERROR: could not find underscore in base name', file=__FILE__, line=__LINE__)
     endif
   end subroutine file_year_append
-
 
   !=======================================================================
   subroutine prepare_atm_forcing (nx_block, ny_block, ilo, ihi, jlo, jhi, hm, Tair, fsw, cldf, flw, frain, fsnow, Qa, rhoa, uatm, vatm, &
@@ -1403,33 +2615,6 @@ contains
        endif ! rotated
     endif ! calc_strair
   end subroutine prepare_atm_forcing
-
-  !=======================================================================
-  subroutine prepare_ocn_forcing(nx_block, ny_block, ilo, ihi, jlo, jhi, sst, sss, uocn, vocn)
-    !
-    ! Author: DP@H2O, University of Tasmania
-    !
-    integer (kind=int_kind), intent(in) :: nx_block, ny_block, & ! block dimensions
-                                           ilo,ihi,jlo,jhi       ! beginning and end of physical domain
-    real (kind=dbl_kind), dimension(nx_block,ny_block), intent(inout) :: sst     , & ! sea surface temperature
-                                                                         sss     , & ! sea surface salinity
-                                                                         uocn    , & ! eastward sea surface current
-                                                                         vocn        ! northward sea surface current
-    integer (kind=int_kind)     :: i, j
-    do j = jlo, jhi
-       do i = ilo, ihi
-          ! convert sst kelvins to celsius
-          !if (trim(sst_units) == 'K') then
-          ! sst(i,j) = sst(i,j) !-273.15
-          ! Here we are finding absurdly high values of sea surface salinity and setting this to zero
-          sss(i,j) = max(sss(i,j),c0)
-          ! Here we are finding absurdly high values of sea surface currents and setting these to zero
-          if (ABS(uocn(i,j)) .gt. c5) uocn(i,j) = c0
-          if (ABS(vocn(i,j)) .gt. c5) vocn(i,j) = c0
-       enddo ! i
-    enddo  ! j
-    !$OMP END PARALLEL DO
-  end subroutine prepare_ocn_forcing
 
   !=======================================================================
   subroutine longwave_parkinson_washington(Tair, cldf, flw)
@@ -1667,22 +2852,6 @@ contains
   end subroutine JRA55_gx3_files
 
   !=======================================================================
-  ! subroutine ERA5_files(fyr)
-  !   integer (kind=int_kind), intent(in) :: fyr
-  !   if (my_task.eq.master_task) write(nu_diag, *) 'ERA5_files was passed year as: ',fyr
-  !   F_ERA5 = trim(atm_data_dir)//'era5_for_cice6_'
-  !   call file_year_append(F_ERA5, fyr)
-  !   if (my_task.eq.master_task) write(nu_diag, *) 'ERA5_files has F_ERA5 defined as : ',trim(F_ERA5)
-  ! end subroutine ERA5_files
-
-  ! !=======================================================================
-  ! subroutine AFIM_files(fyr)
-  !   integer (kind=int_kind), intent(in) :: fyr
-  !   if (my_task.eq.master_task) write(nu_diag, *) 'AFIM_files was passed year as: ',fyr
-  !   F_AFIM = trim(ocn_data_dir)//'ORAS_'
-  !   call file_year_append(F_AFIM, fyr)
-  !   if (my_task.eq.master_task) write(nu_diag, *) 'AFIM_files has F_AFIM defined as : ',trim(F_AFIM)
-  ! end subroutine AFIM_files
   subroutine init_forcing_file(base_dir, prefix, year, file_out, label)
     character(len=*), intent(in)  :: base_dir, prefix, label
     integer(kind=int_kind), intent(in) :: year
@@ -1692,10 +2861,14 @@ contains
     call file_year_append(file_out, year)
     if (my_task == master_task) write(nu_diag, *) trim(label)//'_files has file defined as : ', trim(file_out)
   end subroutine init_forcing_file
+
+  !=======================================================================
   subroutine ERA5_files(fyr)
     integer (kind=int_kind), intent(in) :: fyr  !
     call init_forcing_file(atm_data_dir, 'era5_for_cice6', fyr, F_ERA5, 'ERA5')
   end subroutine ERA5_files
+
+  !=======================================================================
   subroutine AFIM_files(fyr)
     integer (kind=int_kind), intent(in) :: fyr  !
     call init_forcing_file(ocn_data_dir, 'ORAS', fyr, F_AFIM, 'AFIM')
@@ -1886,123 +3059,467 @@ contains
   end subroutine JRA55_data
 
   !=======================================================================
+  !=======================================================================
+  ! ERA5: subroutines to read and manipulate ERA5 forcing data.
+  !
+  ! ERA5 forcing is preprocessed offline from native ERA5 single-level
+  ! reanalysis fields on Gadi to the CICE T grid. The preprocessing uses
+  ! xESMF patch regridding with nearest-source-to-destination extrapolation
+  ! and precomputed ESMF weights. Monthly regridded files are retained
+  ! as the primary forcing product:
+  !
+  !    era5_for_cice6_YYYY_MM.nc 
+  !
+  ! The offline ERA5-to-CICE variable mapping is:
+  !
+  !    ERA5 2t       -> airtmp   (2-m air temperature, K)
+  !    ERA5 msdwlwrf -> dlwsfc   (downward longwave flux, W/m^2)
+  !    ERA5 msdwswrf -> glbrad   (downward shortwave flux, W/m^2)
+  !    ERA5 mtpr     -> ttlpcp   (total precipitation rate, kg/m^2/s)
+  !    ERA5 10u      -> wndewd   (eastward 10-m wind, m/s)
+  !    ERA5 10v      -> wndnwd   (northward 10-m wind, m/s)
+  !    ERA5 2d + sp  -> spchmd   (specific humidity, kg/kg)
+  !    ERA5 sp       -> pair     (surface pressure, Pa)
+  !    ERA5 msr      -> snowfall (snowfall rate, kg/m^2/s)
+  !    ERA5 mtpr-msr -> rainfall (rainfall rate, kg/m^2/s)
+  !    ERA5 blh      -> blh      (boundary-layer height, m)
+  !    ERA5 10fg     -> windgust (10-m wind gust, m/s)
+  !    ERA5 100u     -> wnd100ewd (eastward 100-m wind, m/s)
+  !    ERA5 100v     -> wnd100nwd (northward 100-m wind, m/s)
+  !
+  ! Specific humidity is computed offline from 2-m dewpoint temperature
+  ! and surface pressure using
+  !
+  !    E = a1 * exp(a3 * (d2m - T0) / (d2m - a4))
+  !    q = (Rdry/Rvap) * E / (sp - (1 - Rdry/Rvap) * E)
+  !
+  ! where
+  !
+  !    Rdry = 287.0597 J kg^-1 K^-1
+  !    Rvap = 461.5250 J kg^-1 K^-1
+  !    a1   = 611.21 Pa
+  !    a3   = 17.502
+  !    a4   = 32.19 K
+  !    T0   = 273.16 K
+  !
+  ! Within CICE, states are treated as instantaneous fields:
+  !
+  !    airtmp, wndewd, wndnwd, spchmd
+  !
+  ! Fluxes are treated as hourly averages:
+  !
+  !    glbrad, dlwsfc, ttlpcp
+  !
+  ! The first state record is YYYY-01-01-00:00Z. The first flux record
+  ! represents the hourly average over YYYY-12-31-23:00Z to
+  ! YYYY-01-01-00:00Z. State fields are interpolated in time; flux fields
+  ! are not interpolated and are applied as record values.
+  !
+  ! File is NetCDF with winds in geographic east/north directions. Wind
+  ! rotation to the model grid is handled later in the forcing workflow.
+  !
+  ! Forcing terms currently consist of:
+  !
+  !    glbrad   (shortwave W/m^2), 1 hr average
+  !    dlwsfc   (longwave W/m^2), 1 hr average
+  !    wndewd   (eastward wind m/s), instantaneous
+  !    wndnwd   (northward wind m/s), instantaneous
+  !    airtmp   (air temperature K), instantaneous
+  !    spchmd   (specific humidity kg/kg), instantaneous
+  !    ttlpcp   (precipitation kg/m^2/s), 1 hr average
+  !
+  !=======================================================================
+  !=======================================================================
+  subroutine ERA5_monthly_files(yr, mon)
+    ! Build monthly ERA5 forcing filename.
+    !
+    ! Expected file pattern:
+    !   ${atm_data_dir}/era5_for_cice6_YYYY_MM.nc
+    !
+    ! Example:
+    !   /g/data/gv90/da1339/afim_input/ERA5/0p25/bilinear/monthly_cice6/era5_for_cice6_1994_10.nc
+    integer(kind=int_kind), intent(in) :: yr
+    integer(kind=int_kind), intent(in) :: mon
+    character(len=4) :: cyear
+    character(len=2) :: cmonth
+    character(len=*), parameter :: subname = '(ERA5_monthly_files)'
+    if (mon < 1 .or. mon > 12) then
+       write(nu_diag,*) subname, ' ERROR invalid month = ', mon
+       call abort_ice(error_message=subname//' invalid month', file=__FILE__, line=__LINE__)
+    endif
+    write(cyear, '(i4.4)') yr
+    write(cmonth,'(i2.2)') mon
+    F_ERA5 = trim(atm_data_dir)//'/era5_for_cice6_'//cyear//'_'//cmonth//'.nc'
+    if (debug_forcing .or. local_debug) then
+       if (my_task == master_task) then
+          write(nu_diag,*) subname, ' ERA5 monthly file = ', trim(F_ERA5)
+       endif
+    endif
+  end subroutine ERA5_monthly_files
+
+  !=======================================================================
+  subroutine ERA5_load_field_month(ncid, fieldname, field_month, nrec)
+    ! Read one complete ERA5 monthly field into the local distributed cache.
+    !
+    ! This routine must be called collectively by all MPI tasks because
+    ! ice_read_nc performs master-read/scatter internally.
+    integer(kind=int_kind), intent(in) :: ncid
+    integer(kind=int_kind), intent(in) :: nrec
+    character(len=*), intent(in)       :: fieldname
+
+    real(kind=dbl_kind), dimension(nx_block,ny_block,era5_maxrec_month,max_blocks), intent(inout) :: field_month
+
+    integer(kind=int_kind) :: irec
+    character(len=*), parameter :: subname = '(ERA5_load_field_month)'
+
+    if (nrec > era5_maxrec_month) then
+       write(nu_diag,*) subname, ' ERROR nrec > era5_maxrec_month: ', nrec, era5_maxrec_month
+       call abort_ice(error_message=subname//' nrec too large', file=__FILE__, line=__LINE__)
+    endif
+
+    do irec = 1, nrec
+       call ice_read_nc(ncid, irec, fieldname, field_month(:,:,irec,:), &
+            local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+    enddo
+
+  end subroutine ERA5_load_field_month
+
+  !=======================================================================
+  subroutine ERA5_load_monthly_cache(yr, mon, nrec)
+    ! Load one complete ERA5 monthly file into local distributed cache.
+    !
+    ! No work is done if the requested year/month/nrec is already cached.
+    integer(kind=int_kind), intent(in) :: yr
+    integer(kind=int_kind), intent(in) :: mon
+    integer(kind=int_kind), intent(in) :: nrec
+    integer(kind=int_kind) :: ncid
+    character(len=*), parameter :: subname = '(ERA5_load_monthly_cache)'
+    if (yr  == era5_cache_year  .and. &
+        mon == era5_cache_month .and. &
+        nrec == era5_cache_nrec) then
+       return
+    endif
+    call ERA5_monthly_files(yr, mon)
+    if (my_task == master_task) then
+       write(nu_diag,*) subname, ' loading ERA5 monthly cache'
+       write(nu_diag,*) subname, ' year, month, nrec = ', yr, mon, nrec
+       write(nu_diag,*) subname, ' file              = ', trim(F_ERA5)
+    endif
+    call ice_open_nc(F_ERA5, ncid)
+    call ERA5_load_field_month(ncid, 'airtmp',    era5_Tair_month,     nrec)
+    call ERA5_load_field_month(ncid, 'wndewd',    era5_uatm_month,     nrec)
+    call ERA5_load_field_month(ncid, 'wndnwd',    era5_vatm_month,     nrec)
+    call ERA5_load_field_month(ncid, 'spchmd',    era5_Qa_month,       nrec)
+    call ERA5_load_field_month(ncid, 'glbrad',    era5_fsw_month,      nrec)
+    call ERA5_load_field_month(ncid, 'dlwsfc',    era5_flw_month,      nrec)
+    call ERA5_load_field_month(ncid, 'ttlpcp',    era5_ttlpcp_month,   nrec)
+    call ERA5_load_field_month(ncid, 'pair',      era5_pair_month,     nrec)
+    call ERA5_load_field_month(ncid, 'snowfall',  era5_snowfall_month, nrec)
+    call ERA5_load_field_month(ncid, 'rainfall',  era5_frain_month,    nrec)
+    call ERA5_load_field_month(ncid, 'blh',       era5_blh_month,      nrec)
+    call ERA5_load_field_month(ncid, 'windgust',  era5_windgust_month, nrec)
+    call ERA5_load_field_month(ncid, 'wnd100ewd', era5_uatm100_month,  nrec)
+    call ERA5_load_field_month(ncid, 'wnd100nwd', era5_vatm100_month,  nrec)
+    call ice_close_nc(ncid)
+    era5_cache_year  = yr
+    era5_cache_month = mon
+    era5_cache_nrec  = nrec
+    era5_cache_file  = F_ERA5
+    if (my_task == master_task) then
+       write(nu_diag,*) subname, ' finished loading ERA5 monthly cache'
+    endif
+  end subroutine ERA5_load_monthly_cache
+
+  !=======================================================================
+  subroutine ERA5_copy_cache_to_slot(nslot, irec)
+    ! Copy one cached ERA5 hourly record into the existing 2-slot forcing arrays.
+    integer(kind=int_kind), intent(in) :: nslot
+    integer(kind=int_kind), intent(in) :: irec
+    character(len=*), parameter :: subname = '(ERA5_copy_cache_to_slot)'
+    if (nslot < 1 .or. nslot > 2) then
+       call abort_ice(error_message=subname//' invalid nslot', file=__FILE__, line=__LINE__)
+    endif
+    if (irec < 1 .or. irec > era5_cache_nrec) then
+       write(nu_diag,*) subname, ' ERROR irec, cache_nrec = ', irec, era5_cache_nrec
+       call abort_ice(error_message=subname//' invalid irec', file=__FILE__, line=__LINE__)
+    endif
+    Tair_data    (:,:,nslot,:) = era5_Tair_month    (:,:,irec,:)
+    uatm_data    (:,:,nslot,:) = era5_uatm_month    (:,:,irec,:)
+    vatm_data    (:,:,nslot,:) = era5_vatm_month    (:,:,irec,:)
+    Qa_data      (:,:,nslot,:) = era5_Qa_month      (:,:,irec,:)
+    fsw_data     (:,:,nslot,:) = era5_fsw_month     (:,:,irec,:)
+    flw_data     (:,:,nslot,:) = era5_flw_month     (:,:,irec,:)
+    fsnow_data   (:,:,nslot,:) = era5_ttlpcp_month  (:,:,irec,:)
+    pair_data    (:,:,nslot,:) = era5_pair_month    (:,:,irec,:)
+    snowfall_data(:,:,nslot,:) = era5_snowfall_month(:,:,irec,:)
+    frain_data   (:,:,nslot,:) = era5_frain_month   (:,:,irec,:)
+    blh_data     (:,:,nslot,:) = era5_blh_month     (:,:,irec,:)
+    windgust_data(:,:,nslot,:) = era5_windgust_month(:,:,irec,:)
+    uatm100_data (:,:,nslot,:) = era5_uatm100_month (:,:,irec,:)
+    vatm100_data (:,:,nslot,:) = era5_vatm100_month (:,:,irec,:)
+  end subroutine ERA5_copy_cache_to_slot
+
+  !=======================================================================
+  logical(kind=log_kind) function ERA5_has_var(ncid, fieldname)
+    ! Return true if fieldname exists in an already-open NetCDF file.
+#ifdef USE_NETCDF
+    use netcdf, only : nf90_noerr, nf90_inq_varid
+#endif
+    integer(kind=int_kind), intent(in) :: ncid
+    character(len=*), intent(in)       :: fieldname
+#ifdef USE_NETCDF
+    integer :: ierr
+    integer :: varid
+    ierr = nf90_inq_varid(ncid, trim(fieldname), varid)
+    ERA5_has_var = (ierr == nf90_noerr)
+#else
+    ERA5_has_var = .false.
+#endif
+  end function ERA5_has_var
+
+  !=======================================================================
+  subroutine ERA5_read_optional(ncid, recnum, fieldname, field_data, nslot)
+    ! Read an optional ERA5 variable if present; otherwise zero its slot.
+    !
+    ! This lets older ERA5 files without boundary-layer diagnostics remain
+    ! readable while new files can carry pair/snowfall/rainfall/blh/gust/100m wind.
+    integer(kind=int_kind), intent(in) :: ncid
+    integer(kind=int_kind), intent(in) :: recnum
+    integer(kind=int_kind), intent(in) :: nslot
+    character(len=*), intent(in)       :: fieldname
+    real(kind=dbl_kind), dimension(nx_block,ny_block,2,max_blocks), intent(inout) :: field_data
+    character(len=*), parameter :: subname = '(ERA5_read_optional)'
+    if (ERA5_has_var(ncid, fieldname)) then
+       call ice_read_nc(ncid, recnum, fieldname, field_data(:,:,nslot,:), &
+            local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
+    else
+       field_data(:,:,nslot,:) = c0
+       if (debug_forcing .or. local_debug) then
+          if (my_task == master_task) then
+             write(nu_diag,*) subname, ' optional variable missing: ', trim(fieldname)
+          endif
+       endif
+    endif
+  end subroutine ERA5_read_optional
+
+  !=======================================================================
+  subroutine scale_era5_ant_coastal_precip(precip)
+    ! Scale ERA5 total precipitation over Antarctic coastal ocean cells.
+    !
+    ! This is an intentionally simple forcing-sensitivity perturbation:
+    !   - applies only when era5_mod_var selects Antarctic coastal precip
+    !   - uses ocean cells adjacent to land
+    !   - restricts to Southern Ocean / Antarctic latitudes
+    !   - applies multiplicative era5_mod_fac
+    !
+    ! precip is the ERA5 ttlpcp field already copied into CICE fsnow,
+    ! before CICE partitions precip into rain/snow.
+    use ice_domain, only : nblocks
+    use ice_grid,   only : hm, TLAT
+    real(kind=dbl_kind), dimension(nx_block,ny_block,max_blocks), intent(inout) :: precip
+    integer(kind=int_kind) :: i, j, iblk
+    real(kind=dbl_kind)    :: pi, lat_cutoff
+    character(len=*), parameter :: subname = '(scale_era5_ant_coastal_precip)'
+    pi = c4 * atan(c1)
+    ! TLAT is stored in radians. Use -50 deg as a deliberately blunt
+    ! Southern Ocean / Antarctic coastal mask for this sensitivity test.
+    lat_cutoff = -50.0_dbl_kind * pi / c180
+    if (debug_forcing .or. local_debug) then
+       if (my_task == master_task) then
+          write(nu_diag,*) subname, ' applying era5_mod_fac = ', era5_mod_fac
+          write(nu_diag,*) subname, ' lat_cutoff_deg      = ', -50.0_dbl_kind
+       endif
+    endif
+    !$OMP PARALLEL DO PRIVATE(iblk,j,i)
+    do iblk = 1, nblocks
+       do j = 1, ny_block
+          do i = 1, nx_block
+             if (is_ant_coastal_ocean_cell(i,j,iblk,lat_cutoff)) then
+                precip(i,j,iblk) = era5_mod_fac * precip(i,j,iblk)
+             endif
+          enddo
+       enddo
+    enddo
+    !$OMP END PARALLEL DO
+  end subroutine scale_era5_ant_coastal_precip
+
+  !=======================================================================
+  logical(kind=log_kind) function is_ant_coastal_ocean_cell(i, j, iblk, lat_cutoff)
+    ! Crude Antarctic coastal-ocean selector.
+    !
+    ! A cell is selected if:
+    !   1. it is ocean on the T grid,
+    !   2. it is south of lat_cutoff,
+    !   3. one of its four direct T-grid neighbours is land/boundary.
+    use ice_grid, only : hm, TLAT
+    integer(kind=int_kind), intent(in) :: i, j, iblk
+    real(kind=dbl_kind),    intent(in) :: lat_cutoff
+    logical(kind=log_kind) :: ocean_cell
+    logical(kind=log_kind) :: adjacent_land
+    ocean_cell    = hm(i,j,iblk) > p5
+    adjacent_land = .false.
+    if (i > 1       ) adjacent_land = adjacent_land .or. hm(i-1,j,iblk) <= p5
+    if (i < nx_block) adjacent_land = adjacent_land .or. hm(i+1,j,iblk) <= p5
+    if (j > 1       ) adjacent_land = adjacent_land .or. hm(i,j-1,iblk) <= p5
+    if (j < ny_block) adjacent_land = adjacent_land .or. hm(i,j+1,iblk) <= p5
+    is_ant_coastal_ocean_cell = ocean_cell .and. adjacent_land .and. TLAT(i,j,iblk) <= lat_cutoff
+  end function is_ant_coastal_ocean_cell
+
+  !=======================================================================
+  subroutine ERA5_debug_minmax(label, field)
+    use ice_global_reductions, only : global_minval, global_maxval
+    use ice_domain, only            : distrb_info
+    use ice_grid, only              : tmask
+    character(len=*), intent(in) :: label
+    real(kind=dbl_kind), dimension(nx_block,ny_block,max_blocks), intent(in) :: field
+    real(kind=dbl_kind) :: vmin, vmax
+    if (debug_forcing .or. local_debug) then
+       vmin = global_minval(field, distrb_info, tmask)
+       vmax = global_maxval(field, distrb_info, tmask)
+       if (my_task == master_task) write(nu_diag,*) '(ERA5_debug_minmax) ', trim(label), vmin, vmax
+    endif
+  end subroutine ERA5_debug_minmax
+
+  !=======================================================================
   subroutine ERA5_data
+    ! Reads monthly hourly ERA5 forcing files on the CICE T grid.
     !
-    ! This code is built off the back of the JRA55_data subroutine (above).
-    ! It assumes hourly ERA5 data stored in yearly files as follows:
+    ! Stage 1 behaviour:
+    !   - monthly file read-in
+    !   - old forcing semantics preserved
+    !   - ttlpcp is still mapped to fsnow
+    !   - snowfall/rainfall/pair/blh/gust/100m winds are read if present,
+    !     but not yet used to alter physics
     !
-    ! states are instantaneous, 1st record is YYYY-01-01-00:00Z
-    ! fluxes are hourly averages, 1st record is YYYY-12-31-23:00Z to [+1]YYYY-01-01-OOZ
-    ! interpolate states, do not interpolate fluxes
+    ! Stage 2 behaviour:
+    !   - monthly file read-in
+    !   - ERA5 snowfall is mapped to CICE fsnow
+    !   - ERA5 rainfall is mapped to CICE frain
+    !   - ttlpcp is retained as a diagnostic/check field
+    !   - pair/blh/gust/100m winds are mandatory read-ins but not yet used
+    !     to alter physics
     !
-    ! File is NETCDF with winds in NORTH and EAST direction, and file variable names are:
-    ! glbrad   (shortwave W/m^2), 1 hr average
-    ! dlwsfc   (longwave W/m^2), 1 hr average
-    ! wndewd   (eastward wind m/s), instantaneous
-    ! wndnwd   (northward wind m/s), instantaneous
-    ! airtmp   (air temperature K), instantaneous
-    ! spchmd   (specific humidity kg/kg), instantaneous
-    ! ttlpcp   (precipitation kg/m s-1), 1 hr average
-    !
-    ! Author: DP@H2O, University of Tasmania
-    !
+    ! Expected file pattern:
+    !   ${atm_data_dir}/era5_for_cice6_YYYY_MM.nc
     use ice_blocks, only            : block, get_block
     use ice_global_reductions, only : global_minval, global_maxval
     use ice_domain, only            : nblocks, distrb_info
-    use ice_flux, only              : fsnow, Tair, uatm, vatm, Qa, fsw, flw
-    use ice_grid, only              : hm, tmask, umask
+    use ice_flux, only              : fsnow, frain, Tair, uatm, vatm, Qa, fsw, flw
+    use ice_grid, only              : hm, tmask, umask, TLAT
     use ice_state, only             : aice
-    use ice_calendar, only          : days_per_year, use_leap_years, mday, mmonth, myear, isleap
-    integer (kind=int_kind)       :: ncid             , & ! netcdf file id
-                                     i, j, n1         , &
-                                     lfyear           , & ! local year value
-                                     recnum           , & ! record number
-                                     maxrec           , & ! maximum record number
-                                     iblk                 ! block index
-    integer (kind=int_kind), save :: frec_info(2,2) = -99 ! remember prior values to reduce reading first dim is yr, recnum second dim is data1 data2
-    real (kind=dbl_kind)          :: sec1hr          , &  ! number of seconds in 3 hours
-                                     secday          , &  ! number of seconds in day
-                                     eps, tt         , &  ! for interpolation coefficients
-                                     Tffresh, vmin, vmax
-    character(len=64)             :: fieldname !netcdf field name
-    character (char_len_long)     :: F_ERA5_old
-    character(len=*), parameter   :: subname = '(ERA5_data)'
-    if (local_debug .and. my_task == master_task) write(nu_diag,*) subname,'fdbg start'
+    use ice_calendar, only          : mday, mmonth, myear
+    integer(kind=int_kind) :: ncid
+    integer(kind=int_kind) :: i, j, n1
+    integer(kind=int_kind) :: lfyear
+    integer(kind=int_kind) :: lmonth
+    integer(kind=int_kind) :: recnum
+    integer(kind=int_kind) :: rec_to_read
+    integer(kind=int_kind) :: maxrec
+    integer(kind=int_kind) :: iblk
+    integer(kind=int_kind) :: modadj
+    integer(kind=int_kind) :: rec1, rec2
+    ! remember prior values to reduce reading:
+    ! dim 1: year, month, recnum
+    ! dim 2: data slot 1/2
+    integer(kind=int_kind), save :: frec_info(3,2) = -99
+    real(kind=dbl_kind) :: sec1hr
+    real(kind=dbl_kind) :: secday
+    real(kind=dbl_kind) :: eps, tt
+    real(kind=dbl_kind) :: Tffresh
+    real(kind=dbl_kind) :: vmin, vmax
+    character(len=64)           :: fieldname
+    character(len=*), parameter :: subname = '(ERA5_data)'
     call icepack_query_parameters(Tffresh_out=Tffresh)
     call icepack_query_parameters(secday_out=secday)
     call icepack_warnings_flush(nu_diag)
     if (icepack_warnings_aborted()) call abort_ice(error_message=subname, file=__FILE__, line=__LINE__)
-    sec1hr = secday/24        ! seconds in 1 hours
-    maxrec = 365*24
-    if (mod(myear,  4) == 0) maxrec = 366*24
-    if (mod(myear,400) == 0) maxrec = 366*24
-    if (my_task.eq.master_task) write(nu_diag, *) subname, ' myear, mmonth              : ', myear, mmonth
-    if (my_task.eq.master_task) write(nu_diag, *) subname, ' maximum records            : ', maxrec
-    recnum = 24*int(yday) - 23 + int(real(msec,kind=dbl_kind)/sec1hr)
-    if (my_task.eq.master_task) write(nu_diag, *) subname, ' current forcing time index : ', recnum
-    if ((myear.gt.fyear_init.and.recnum.eq.1).or.(recnum>maxrec)) then
-       call ERA5_files(myear)
-       recnum = 1
+    sec1hr = secday / 24.0_dbl_kind
+
+    !-------------------------------------------------------------------
+    ! 1. Work out forcing-cycle year and current month.
+    !    Monthly ERA5 files contain one hourly record per hour in this month.
+    !-------------------------------------------------------------------
+    if (ycycle == 0) then
+       lfyear = myear
+    else
+       modadj = abs((min(0, myear - fyear_init) / ycycle + 1) * ycycle)
+       lfyear = fyear_init + mod(myear - fyear_init + modadj, ycycle)
     endif
-    call ice_open_nc(F_ERA5,ncid)
-    do n1 = 0,1
-       if ((recnum>1).and.(recnum<maxrec)) then
-          fieldname = 'airtmp'
-          call ice_read_nc(ncid, recnum+n1, fieldname, Tair_data (:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-          fieldname = 'wndewd'
-          call ice_read_nc(ncid, recnum+n1, fieldname, uatm_data (:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-          fieldname = 'wndnwd'
-          call ice_read_nc(ncid, recnum+n1, fieldname, vatm_data (:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-          fieldname = 'spchmd'
-          call ice_read_nc(ncid, recnum+n1, fieldname, Qa_data   (:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-          fieldname = 'glbrad'
-          call ice_read_nc(ncid, recnum+n1, fieldname, fsw_data  (:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-          fieldname = 'dlwsfc'
-          call ice_read_nc(ncid, recnum+n1, fieldname, flw_data  (:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-          fieldname = 'ttlpcp'
-          call ice_read_nc(ncid, recnum+n1, fieldname, fsnow_data(:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-       else
-          fieldname = 'airtmp'
-          call ice_read_nc(ncid, recnum, fieldname, Tair_data (:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-          fieldname = 'wndewd'
-          call ice_read_nc(ncid, recnum, fieldname, uatm_data (:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-          fieldname = 'wndnwd'
-          call ice_read_nc(ncid, recnum, fieldname, vatm_data (:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-          fieldname = 'spchmd'
-          call ice_read_nc(ncid, recnum, fieldname, Qa_data   (:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-          fieldname = 'glbrad'
-          call ice_read_nc(ncid, recnum, fieldname, fsw_data  (:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-          fieldname = 'dlwsfc'
-          call ice_read_nc(ncid, recnum, fieldname, flw_data  (:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-          fieldname = 'ttlpcp'
-          call ice_read_nc(ncid, recnum, fieldname, fsnow_data(:,:,n1+1,:), local_debug, field_loc=field_loc_center, field_type=field_type_scalar)
-       endif
-    enddo
-    call ice_close_nc(ncid)
-    eps    = 1.0e-6
-    tt     = real(mod(msec,nint(sec1hr)),kind=dbl_kind)
+    lmonth = mmonth
+    maxrec = 24 * daymo(lmonth)
+    recnum = 24 * (mday - 1) + int(real(msec,kind=dbl_kind) / sec1hr) + 1
+    if (recnum < 1) recnum = 1
+    if (recnum > maxrec) recnum = maxrec
+
+    !-------------------------------------------------------------------
+    ! 2. Load monthly cache if needed, then fill current/next slots.
+    !
+    ! NetCDF I/O happens only when the model enters a new forcing month.
+    ! Every timestep after that copies local distributed records from cache.
+    !-------------------------------------------------------------------
+    call ERA5_load_monthly_cache(lfyear, lmonth, maxrec)
+    rec1 = recnum
+    rec2 = min(recnum + 1, maxrec)
+    call ERA5_copy_cache_to_slot(1, rec1)
+    call ERA5_copy_cache_to_slot(2, rec2)
+
+    !-------------------------------------------------------------------
+    ! 3. Interpolation coefficients within the current hour.
+    !-------------------------------------------------------------------
+    eps    = 1.0e-6_dbl_kind
+    tt     = real(mod(msec, nint(sec1hr)), kind=dbl_kind)
     c2intp = tt / sec1hr
-    if (c2intp < c0 .and. c2intp > c0-eps) c2intp = c0
-    if (c2intp > c1 .and. c2intp < c1+eps) c2intp = c1
-    c1intp = 1.0_dbl_kind - c2intp
+    if (c2intp < c0 .and. c2intp > c0 - eps) c2intp = c0
+    if (c2intp > c1 .and. c2intp < c1 + eps) c2intp = c1
+    c1intp = c1 - c2intp
     if (c2intp < c0 .or. c2intp > c1) then
-       write(nu_diag,*) subname,' ERROR: c2intp = ',c2intp
-       call abort_ice (error_message=subname//' ERROR: c2intp out of range', file=__FILE__, line=__LINE__)
+       write(nu_diag,*) subname, ' ERROR: c2intp = ', c2intp
+       call abort_ice(error_message=subname//' ERROR: c2intp out of range', file=__FILE__, line=__LINE__)
     endif
-    if (my_task.eq.master_task) write(nu_diag, *) subname, ' c1,c2: ',c1intp,c2intp
+    if (debug_forcing .or. local_debug) then
+       if (my_task == master_task) write(nu_diag,*) subname, ' c1,c2 = ', c1intp, c2intp
+    endif
+
+    !-------------------------------------------------------------------
+    ! 4. Apply current Stage 2 semantics.
+    !
+    ! States are interpolated.
+    ! Fluxes are applied as current hourly record values.
+    !
+    ! Stage 2 uses ERA5 precipitation phase directly:
+    !   fsnow <- snowfall
+    !   frain <- rainfall
+    !
+    ! ttlpcp is still read into fsnow_data as a diagnostic/check field,
+    ! but it is no longer passed directly into CICE as snowfall.
+    !-------------------------------------------------------------------
     call interpolate_data(Tair_data, Tair)
     call interpolate_data(uatm_data, uatm)
     call interpolate_data(vatm_data, vatm)
-    call interpolate_data(Qa_data  , Qa)
-    fsw  (:,:,:) = fsw_data  (:,:,1,:)
-    flw  (:,:,:) = flw_data  (:,:,1,:)
-    fsnow(:,:,:) = fsnow_data(:,:,1,:)
+    call interpolate_data(Qa_data,   Qa)
+    fsw  (:,:,:) = fsw_data      (:,:,1,:)
+    flw  (:,:,:) = flw_data      (:,:,1,:)
+    fsnow(:,:,:) = snowfall_data (:,:,1,:)
+    frain(:,:,:) = frain_data    (:,:,1,:)
+    ! Defensive clipping. ERA5 rates should already be non-negative after shuga
+    ! preprocessing, but keep CICE protected from tiny interpolation/regridding
+    ! artifacts.
+    fsnow(:,:,:) = max(fsnow(:,:,:), c0)
+    frain(:,:,:) = max(frain(:,:,:), c0)
+    ! Legacy total-precip coastal scaling is ambiguous once rainfall/snowfall
+    ! are separated. Leave it disabled for the phase-separation experiment.
+    !
+    ! Later Stage 3 should scale fsnow only, using a renamed snowfall-specific
+    ! helper/control such as:
+    !   era5_mod_var = 'snowfall_ant_coast'
+    !-------------------------------------------------------------------
+    ! 5. Existing masking and summer Tair limiter.
+    !-------------------------------------------------------------------
     !$OMP PARALLEL DO PRIVATE(iblk,i,j)
     do iblk = 1, nblocks
-       ! limit summer Tair values where ice is present
        do j = 1, ny_block
           do i = 1, nx_block
-             if (aice(i,j,iblk) > p1) Tair(i,j,iblk) = min(Tair(i,j,iblk), Tffresh+p1)
+             if (aice(i,j,iblk) > p1) Tair(i,j,iblk) = min(Tair(i,j,iblk), Tffresh + p1)
           enddo
        enddo
        do j = 1, ny_block
@@ -2014,268 +3531,306 @@ contains
              fsw  (i,j,iblk) = fsw  (i,j,iblk) * hm(i,j,iblk)
              flw  (i,j,iblk) = flw  (i,j,iblk) * hm(i,j,iblk)
              fsnow(i,j,iblk) = fsnow(i,j,iblk) * hm(i,j,iblk)
-          enddo
-       enddo
-    enddo  ! iblk !$OMP END PARALLEL DO
-    !if (era5_mod_var)
-    if (debug_forcing .or. local_debug) then
-       if (my_task.eq.master_task) write (nu_diag,*) subname,' ERA5 global min max for forcing time record index: ', recnum
-       vmin = global_minval(fsw,distrb_info,tmask)
-       vmax = global_maxval(fsw,distrb_info,tmask)
-       if (my_task.eq.master_task) write (nu_diag,*) subname,'  fsw',vmin,vmax
-       vmin = global_minval(flw,distrb_info,tmask)
-       vmax = global_maxval(flw,distrb_info,tmask)
-       if (my_task.eq.master_task) write (nu_diag,*) subname,'  flw',vmin,vmax
-       vmin =global_minval(fsnow,distrb_info,tmask)
-       vmax =global_maxval(fsnow,distrb_info,tmask)
-       if (my_task.eq.master_task) write (nu_diag,*) subname,'  fsnow',vmin,vmax
-       vmin = global_minval(Tair,distrb_info,tmask)
-       vmax = global_maxval(Tair,distrb_info,tmask)
-       if (my_task.eq.master_task) write (nu_diag,*) subname,'  Tair',vmin,vmax
-       vmin = global_minval(uatm,distrb_info,umask)
-       vmax = global_maxval(uatm,distrb_info,umask)
-       if (my_task.eq.master_task) write (nu_diag,*) subname,'  uatm',vmin,vmax
-       vmin = global_minval(vatm,distrb_info,umask)
-       vmax = global_maxval(vatm,distrb_info,umask)
-       if (my_task.eq.master_task) write (nu_diag,*) subname,'  vatm',vmin,vmax
-       vmin = global_minval(Qa,distrb_info,tmask)
-       vmax = global_maxval(Qa,distrb_info,tmask)
-       if (my_task.eq.master_task) write (nu_diag,*) subname,'  Qa',vmin,vmax
-    endif                   ! debug_forcing
-  end subroutine ERA5_data
-
-  !=======================================================================
-  ! dpath2o, Feb.24
-  subroutine AFIM_init
-    use ice_blocks, only        : nx_block, ny_block
-    use ice_domain_size, only   : max_blocks
-    use ice_calendar, only      : isleap
-    real(kind=dbl_kind), allocatable, dimension(:,:,:,:,:) :: ocn_frcg
-    character(len=*), parameter :: subname = '(AFIM_init)'
-    integer (kind=int_kind)     :: n, m, nrec ! field loop, temporal loop, length of time
-    integer (kind=int_kind)     :: fid
-    character(char_len)         :: vname(int(4))  ! variable names to search for in file
-    data vname /  'sst', 'sss', 'u', 'v' /
-    real (kind=dbl_kind), dimension (nx_block,ny_block,max_blocks) :: work1
-    if (trim(ocn_data_freq)=='daily') then
-       nrec = 365
-       if (mod(myear,  4) == 0) nrec = 366
-       if (mod(myear,400) == 0) nrec = 366
-    elseif (trim(ocn_data_freq)=='weekly') then
-       nrec = wk_per_yr
-    elseif (trim(ocn_data_freq)=='monthly') then
-       nrec = m_per_yr
-    endif
-    if (my_task.eq.master_task) write(nu_diag, *) subname, ' fyear : ', fyear
-    if (my_task.eq.master_task) write(nu_diag, *) subname, ' nrec  : ', nrec
-    allocate(ocn_frcg(nx_block,ny_block,max_blocks,nfld,nrec))
-  end subroutine AFIM_init
-
-  !=======================================================================
-  ! dpath2o, Feb.24
-  subroutine AFIM_data(dt)
-    use ice_blocks, only            : nx_block, ny_block
-    use ice_read_write, only        : ice_read_nc
-    use ice_global_reductions, only : global_minval, global_maxval
-    use ice_domain, only            : distrb_info, nblocks
-    use ice_flux, only              : sss, sst, uocn, vocn, Tf
-    use ice_grid, only              : hm, tmask, umask
-    use ice_calendar, only          : days_per_year, months_per_year, mmonth, myear, isleap
-    use ice_restart_shared, only    : restart
-    real(kind=dbl_kind), intent(in) :: dt
-    integer(kind=int_kind)          :: fid, ncid, i, j, n, lfyear, recnum, maxrec, recslot, dataloc, iblk
-    real(kind=dbl_kind)             :: secday, eps, tt, sst_min, sst_max, sss_min, sss_max, uocn_min,&
-                                       uocn_max, vocn_min, vocn_max, vmin, vmax, sst_thresh,&
-                                       sss_high_thresh, sss_low_thresh, ispd_thresh
-    character(len=64)               :: fieldname
-    character(len=20)               :: subname = '(AFIM_data)'
-    real(kind=dbl_kind), dimension(nx_block, ny_block, max_blocks) :: interp_sst, interp_sss,&
-                                                                      interp_uocn, interp_vocn,&
-                                                                      sst_curr, sst_prev, sss_curr,&
-                                                                      sss_prev, uocn_curr, uocn_prev,&
-                                                                      vocn_curr, vocn_prev
-    sst_thresh       = 54.0 !deg.C
-    sss_high_thresh  = 47.0 !psu
-    sss_low_thresh   = 5.0  !psu
-    ispd_thresh      = 2.5  !m/s
-    ! get the seconds in a day from icepack as well as flush the diagnostics from icepack
-    call icepack_query_parameters(secday_out=secday)
-    call icepack_warnings_flush(nu_diag)
-    if (icepack_warnings_aborted()) call abort_ice(error_message=subname, file=__FILE__, line=__LINE__)
-    ! SET THE RECORD NUMBER & INTERPOLATION COEFFICIENTS
-    ! the record number is the time index value which determines which time record to extract from the 'forcing' file
-    ! we set it each time this sub-routine is called to the corresponding frequency of the ocean forcing
-    ! monthly :: the current month, mid-month
-    ! daily   :: the current yearday in the middle of that day
-    ! weekly  :: every 7th day
-    recslot = 2 ! 2 = second-half, 1 = first-half
-    dataloc = 2 ! end of period
-    if (trim(ocn_data_freq)=='monthly') then
-        maxrec = months_per_year
-        recnum = mmonth
-        call interp_coeff_monthly(recslot-1)
-    elseif (trim(ocn_data_freq)=='daily') then
-       maxrec = 365
-       if (mod(myear,  4) == 0) maxrec = 366
-       if (mod(myear,400) == 0) maxrec = 366
-       recnum = int(yday) - int(real(msec,kind=dbl_kind)/secday)
-       call interp_coeff(recnum, recslot, secday, dataloc)
-    elseif (trim(ocn_data_freq)=='weekly') then
-        maxrec = days_per_year/int(7)
-        recnum = int(yday/7)
-        if (recnum > maxrec) then
-            recnum = maxrec
-        endif
-        call interp_coeff(recnum, recslot, secday*7, dataloc)
-    endif
-    if (my_task.eq.master_task) write(nu_diag, *) subname, ' myear, mmonth            : ', myear, mmonth
-    if (my_task.eq.master_task) write(nu_diag, *) subname, ' maximum records          : ', maxrec
-    if (my_task.eq.master_task) write(nu_diag, *) subname, ' current record           : ', recnum
-    if (my_task.eq.master_task) write(nu_diag, *) subname, ' c1,c2: ', c1intp,c2intp
-    ! ADVANCE THE YEAR
-    ! only do so when the model year is greater than the initial year and the first time index
-    if (myear.gt.fyear_init .and. recnum.eq.1) then
-       call AFIM_files(myear)
-    endif
-    if (my_task.eq.master_task) write(nu_diag, *) subname, ' reading in each ocean forcing field for time record', recnum
-    ! Open the netCDF file and read SST, SSS, U, V fields for current and next time steps
-    call ice_open_nc(F_AFIM, fid)
-    ! Read SST for current and next time step
-    call ice_read_nc(fid, recnum, 'sst', sst_curr, debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
-    if (recnum>1) then
-       call ice_read_nc(fid, recnum - 1, 'sst', sst_prev, debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
-    endif
-    ! Read SSS for current and next time step
-    call ice_read_nc(fid, recnum, 'sss', sss_curr, debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
-    if (recnum>1) then
-       call ice_read_nc(fid, recnum - 1, 'sss', sss_prev, debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
-    endif
-    ! Read U and V for current and next time step
-    call ice_read_nc(fid, recnum, 'u', uocn_curr, debug_forcing, field_loc=field_loc_NEcorner, field_type=field_type_vector)
-    ! call ice_read_nc(fid, recnum, 'u', uocn_curr, debug_forcing, field_loc=field_loc_center, field_type=field_type_vector)
-    call ice_read_nc(fid, recnum, 'v', vocn_curr, debug_forcing, field_loc=field_loc_NEcorner, field_type=field_type_vector)
-    ! call ice_read_nc(fid, recnum, 'v', vocn_curr, debug_forcing, field_loc=field_loc_center, field_type=field_type_vector)
-    if (recnum>1) then
-       call ice_read_nc(fid, recnum - 1, 'u', uocn_prev, debug_forcing, field_loc=field_loc_NEcorner, field_type=field_type_vector)
-       ! call ice_read_nc(fid, recnum - 1, 'u', uocn_prev, debug_forcing, field_loc=field_loc_center, field_type=field_type_vector)
-       call ice_read_nc(fid, recnum - 1, 'v', vocn_prev, debug_forcing, field_loc=field_loc_NEcorner, field_type=field_type_vector)
-       ! call ice_read_nc(fid, recnum - 1, 'v', vocn_prev, debug_forcing, field_loc=field_loc_center, field_type=field_type_vector)
-    endif
-    call ice_close_nc(fid)
-!$OMP PARALLEL DO PRIVATE(iblk, j, i) SHARED(sst_data, sss_data, uocn_data, vocn_data, interp_sst, interp_sss, interp_uocn, interp_vocn, sst_curr, sst_prev, sss_curr, sss_prev, uocn_curr, uocn_prev, vocn_curr, vocn_prev, sst, sss, uocn, vocn, hm, c1, c0, Tf, dt, trest)
-    do iblk = 1, nblocks
-       ! Interpolate and assign SST data
-       if (recnum>1) then
-          sst_data(:,:,1,iblk) = sst_prev(:,:,iblk)
-          sst_data(:,:,2,iblk) = sst_curr(:,:,iblk)
-       else
-          sst_data(:,:,1,iblk) = sst_curr(:,:,iblk)
-          sst_data(:,:,2,iblk) = sst_curr(:,:,iblk)
-       endif
-       call interpolate_data(sst_data, interp_sst)
-       ! 'RESTORE' (ADDITIONAL SMOOTHING) THE SST VALUES BASED ON A PERIOD OF TIME
-       if (restore_ocn) then
-          do j = 1, ny_block
-             do i = 1, nx_block
-                sst(i, j, iblk) = sst(i, j, iblk) + (interp_sst(i, j, iblk) - sst(i, j, iblk)) * dt / trest
-             enddo
-          enddo
-       endif
-       ! Interpolate and assign SSS data
-       if (recnum>1) then
-          sss_data(:,:,1,iblk) = sss_prev(:,:,iblk)
-          sss_data(:,:,2,iblk) = sss_curr(:,:,iblk)
-       else
-          sss_data(:,:,1,iblk) = sss_curr(:,:,iblk)
-          sss_data(:,:,2,iblk) = sss_curr(:,:,iblk)
-       endif
-       call interpolate_data(sss_data, interp_sss)
-       do j = 1, ny_block
-          do i = 1, nx_block
-             if (hm(i, j, iblk) == c1) then
-                sss(i, j, iblk) = interp_sss(i, j, iblk)
-             endif
-          enddo
-       enddo
-       ! Interpolate and assign UOCN data
-       if (recnum>1) then
-          uocn_data(:,:,1,iblk) = uocn_prev(:,:,iblk)
-          uocn_data(:,:,2,iblk) = uocn_curr(:,:,iblk)
-       else
-          uocn_data(:,:,1,iblk) = uocn_curr(:,:,iblk)
-          uocn_data(:,:,2,iblk) = uocn_curr(:,:,iblk)
-       endif
-       call interpolate_data(uocn_data, interp_uocn)
-       do j = 1, ny_block
-          do i = 1, nx_block
-             if (hm(i, j, iblk) == c1) then
-                uocn(i, j, iblk) = interp_uocn(i, j, iblk)
-             endif
-          enddo
-       enddo
-       ! Interpolate and assign VOCN data
-       if (recnum>1) then
-          vocn_data(:,:,1,iblk) = vocn_prev(:,:,iblk)
-          vocn_data(:,:,2,iblk) = vocn_curr(:,:,iblk)
-       else
-          vocn_data(:,:,1,iblk) = vocn_curr(:,:,iblk)
-          vocn_data(:,:,2,iblk) = vocn_curr(:,:,iblk)
-       endif
-       call interpolate_data(vocn_data, interp_vocn)
-       do j = 1, ny_block
-          do i = 1, nx_block
-             if (hm(i, j, iblk) == c1) then
-                vocn(i, j, iblk) = interp_vocn(i, j, iblk)
-             endif
-          enddo
-       enddo
-    enddo
-!$OMP END PARALLEL DO
-    !$OMP PARALLEL DO PRIVATE(iblk, j, i) SHARED(sst, sss, uocn, vocn, hm, c1, c0, Tf, dt, trest)
-    do iblk = 1, nblocks
-       do j = 1, ny_block
-          do i = 1, nx_block
-             if (hm(i,j,iblk) == c0) then
-                sst (i,j,iblk) = c0
-                sss (i,j,iblk) = c0
-                uocn(i,j,iblk) = c0
-                vocn(i,j,iblk) = c0
-             else
-                sst(i,j,iblk) = max(sst(i,j,iblk), Tf(i,j,iblk))
-                if (sst(i,j,iblk) > sst_thresh) then
-                   sst(i,j,iblk) = sst_thresh
-                endif
-                sss(i,j,iblk) = max(sss(i,j,iblk), c0)
-                if (sss(i, j, iblk) > sss_high_thresh) then
-                   sss(i,j,iblk) = sss_high_thresh
-                endif
-                if (sss(i, j, iblk) < sss_low_thresh) then
-                   sss(i,j,iblk) = sss_low_thresh
-                endif
-                if (ABS(uocn(i, j, iblk)) > ispd_thresh) uocn(i, j, iblk) = c0
-                if (ABS(vocn(i, j, iblk)) > ispd_thresh) vocn(i, j, iblk) = c0
-             endif
+             frain(i,j,iblk) = frain(i,j,iblk) * hm(i,j,iblk)
           enddo
        enddo
     enddo
     !$OMP END PARALLEL DO
-    call ocn_freezing_temperature
+    !-------------------------------------------------------------------
+    ! 6. Diagnostics.
+    !-------------------------------------------------------------------
     if (debug_forcing .or. local_debug) then
-       if (my_task.eq.master_task) write (nu_diag,*) subname,' AFIM global min max for forcing time record index: ', recnum
-       vmin = global_minval(sst,distrb_info,tmask)
-       vmax = global_maxval(sst,distrb_info,tmask)
-       if (my_task.eq.master_task) write (nu_diag,*) subname,'  sst',vmin,vmax
-       vmin = global_minval(sss,distrb_info,tmask)
-       vmax = global_maxval(sss,distrb_info,tmask)
-       if (my_task.eq.master_task) write (nu_diag,*) subname,'  sss',vmin,vmax
-       vmin =global_minval(uocn,distrb_info,umask)
-       vmax =global_maxval(uocn,distrb_info,umask)
-       if (my_task.eq.master_task) write (nu_diag,*) subname,'  uocn',vmin,vmax
-       vmin = global_minval(vocn,distrb_info,umask)
-       vmax = global_maxval(vocn,distrb_info,umask)
-       if (my_task.eq.master_task) write (nu_diag,*) subname,'  vocn',vmin,vmax
+       if (my_task.eq.master_task) write(nu_diag,*) subname, ' ERA5 monthly forcing record = ', recnum
+       vmin = global_minval(fsw,distrb_info,tmask)
+       vmax = global_maxval(fsw,distrb_info,tmask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  fsw', vmin, vmax
+       vmin = global_minval(flw,distrb_info,tmask)
+       vmax = global_maxval(flw,distrb_info,tmask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  flw', vmin, vmax
+       vmin = global_minval(fsnow,distrb_info,tmask)
+       vmax = global_maxval(fsnow,distrb_info,tmask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  fsnow', vmin, vmax
+       vmin = global_minval(frain,distrb_info,tmask)
+       vmax = global_maxval(frain,distrb_info,tmask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  frain', vmin, vmax
+       vmin = global_minval(Tair,distrb_info,tmask)
+       vmax = global_maxval(Tair,distrb_info,tmask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  Tair', vmin, vmax
+       vmin = global_minval(uatm,distrb_info,umask)
+       vmax = global_maxval(uatm,distrb_info,umask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  uatm', vmin, vmax
+       vmin = global_minval(vatm,distrb_info,umask)
+       vmax = global_maxval(vatm,distrb_info,umask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  vatm', vmin, vmax
+       vmin = global_minval(Qa,distrb_info,tmask)
+       vmax = global_maxval(Qa,distrb_info,tmask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  Qa', vmin, vmax
+       vmin = global_minval(pair_data(:,:,1,:),distrb_info,tmask)
+       vmax = global_maxval(pair_data(:,:,1,:),distrb_info,tmask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  pair_data(slot1)', vmin, vmax
+       vmin = global_minval(snowfall_data(:,:,1,:),distrb_info,tmask)
+       vmax = global_maxval(snowfall_data(:,:,1,:),distrb_info,tmask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  snowfall_data(slot1)', vmin, vmax
+       vmin = global_minval(frain_data(:,:,1,:),distrb_info,tmask)
+       vmax = global_maxval(frain_data(:,:,1,:),distrb_info,tmask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  rainfall/frain_data(slot1)', vmin, vmax
+       vmin = global_minval(blh_data(:,:,1,:),distrb_info,tmask)
+       vmax = global_maxval(blh_data(:,:,1,:),distrb_info,tmask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  blh_data(slot1)', vmin, vmax
+       vmin = global_minval(windgust_data(:,:,1,:),distrb_info,tmask)
+       vmax = global_maxval(windgust_data(:,:,1,:),distrb_info,tmask)
+       if (my_task.eq.master_task) write(nu_diag,*) subname, '  windgust_data(slot1)', vmin, vmax
     endif
-  end subroutine AFIM_data
+  end subroutine ERA5_data
+
+   !=======================================================================
+   subroutine AFIM_data(dt)
+      ! Reads daily ocean reanalysis ("sst", "sss", "u", and "v") from yearly
+      ! NetCDF files and applies to CICE model fields with optional SST restoring.
+      !
+      ! Features:
+      ! - Daily forcing with linear interpolation between days
+      ! - SST restoring controlled by trestore (days) from ice_in namelist
+      ! - NaN handling for reanalysis data (replaces NaN with sensible flags)
+      ! - Year cycling via fyear_init and ycycle namelist parameters
+      !
+      ! Required namelist settings (forcing_nml in ice_in):
+      !   ocn_data_type = 'AFIM'
+      !   ocn_data_dir  = '/path/to/daily/sfc/'
+      !   restore_ocn   = .true.    ! enable SST restoring
+      !   trestore      = 1         ! restoring timescale in days
+      !   fyear_init    = 1993      ! first year of forcing data
+      !   ycycle        = 4         ! number of years in forcing cycle
+      !
+      ! Expected file naming: {ocn_data_dir}/ORAS_{YYYY}.nc
+      ! Expected variables: sst(time,nj,ni), sss(time,nj,ni), u(time,nj,ni), v(time,nj,ni)
+      !
+      ! Author: DP@H2O, University of Tasmania
+      !
+      use ice_blocks, only            : nx_block, ny_block
+      use ice_read_write, only        : ice_read_nc, ice_open_nc, ice_close_nc
+      use ice_global_reductions, only : global_minval, global_maxval
+      use ice_domain, only            : distrb_info, nblocks
+      use ice_domain_size, only       : max_blocks
+      use ice_state, only             : aice
+      use ice_flux, only              : sss, sst, uocn, vocn, Tf
+      use ice_grid, only              : hm, tmask, umask
+      use ice_calendar, only          : days_per_year, mmonth, myear, yday, msec
+      use ice_constants, only         : c0, c1, p5
+      use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
+      implicit none
+      real(kind=dbl_kind), intent(in) :: dt
+      ! Local variables
+      integer(kind=int_kind)          :: fid, i, j, iblk
+      integer(kind=int_kind)          :: recnum, maxrec, fyear, modadj
+      real(kind=dbl_kind)             :: secday, vmin, vmax
+      real(kind=dbl_kind)             :: val
+      ! Temporary arrays for current and previous time records
+      real(kind=dbl_kind), dimension(nx_block, ny_block, max_blocks) :: &
+         sst_curr, sst_prev, sss_curr, sss_prev, &
+         uocn_curr, uocn_prev, vocn_curr, vocn_prev
+      logical, save       :: first_call = .true.
+      real(kind=dbl_kind) :: sst_interp, sss_interp, u_interp, v_interp
+      ! Thresholds for sanity checks
+      real(kind=dbl_kind), parameter  :: sst_thresh      = 54.0_dbl_kind
+      real(kind=dbl_kind), parameter  :: sss_high_thresh = 47.0_dbl_kind
+      real(kind=dbl_kind), parameter  :: sss_low_thresh  =  5.0_dbl_kind
+      real(kind=dbl_kind), parameter  :: ispd_thresh     =  2.5_dbl_kind
+      ! NaN fallback values
+      real(kind=dbl_kind), parameter  :: sst_fallback = -1.8_dbl_kind
+      real(kind=dbl_kind), parameter  :: sss_fallback = 34.0_dbl_kind
+      real(kind=dbl_kind), parameter  :: uv_fallback  =  0.0_dbl_kind
+      ! Very large number to detect Inf
+      real(kind=dbl_kind), parameter  :: huge_val = 1.0e30_dbl_kind
+      integer(kind=int_kind), save    :: last_fyear = -999999
+      character(len=*), parameter     :: subname = '(AFIM_data)'
+      !-------------------------------------------------------------------
+      ! 1) what time is it?
+      !-------------------------------------------------------------------
+      call icepack_query_parameters(secday_out=secday)
+      call icepack_warnings_flush(nu_diag)
+      if (icepack_warnings_aborted()) call abort_ice(error_message=subname, file=__FILE__, line=__LINE__)
+      if (ycycle == 0) then
+         fyear = myear
+      else
+         modadj = abs((min(0, myear - fyear_init) / ycycle + 1) * ycycle)
+         fyear  = fyear_init + mod(myear - fyear_init + modadj, ycycle)
+      endif
+      !-------------------------------------------------------------------
+      ! 2) update forcing file if new year
+      !-------------------------------------------------------------------
+      if (fyear /= last_fyear) then
+         call AFIM_files(fyear)
+         last_fyear = fyear
+         if (debug_forcing .or. local_debug) then
+            if (my_task == master_task) then
+               write(nu_diag,*) subname, ' myear, fyear, mmonth:', myear, fyear, mmonth
+            endif 
+         endif
+      endif
+      !-------------------------------------------------------------------
+      ! 3) record number ... assumes forcing is daily
+      !-------------------------------------------------------------------
+      maxrec = days_per_year
+      if (mod(fyear, 4) == 0) maxrec = 366
+      if (mod(fyear, 100) == 0 .and. mod(fyear, 400) /= 0) maxrec = 365
+      recnum = int(yday)
+      if (recnum < 1) recnum = 1
+      if (recnum > maxrec) recnum = maxrec
+      call interp_coeff(recnum, 2, secday, 2)
+      if (debug_forcing .or. local_debug) then
+         if (my_task == master_task) then
+            write(nu_diag,*) subname, ' yday, recnum, maxrec:', yday, recnum, maxrec
+            write(nu_diag,*) subname, ' c1intp, c2intp      :', c1intp, c2intp
+         endif
+      endif 
+      !-------------------------------------------------------------------
+      ! 4) read-in forcing fields ... previous or current time step
+      !-------------------------------------------------------------------
+      call ice_open_nc(F_AFIM, fid)
+      call ice_read_nc(fid, recnum, 'sst', sst_curr, debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
+      call ice_read_nc(fid, recnum, 'sss', sss_curr, debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
+      call ice_read_nc(fid, recnum, 'u', uocn_curr, debug_forcing,  field_loc=field_loc_center, field_type=field_type_scalar)
+      call ice_read_nc(fid, recnum, 'v', vocn_curr, debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
+      if (recnum > 1) then
+         call ice_read_nc(fid, recnum-1, 'sst', sst_prev, debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
+         call ice_read_nc(fid, recnum-1, 'sss', sss_prev, debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
+         call ice_read_nc(fid, recnum-1, 'u', uocn_prev, debug_forcing,  field_loc=field_loc_center, field_type=field_type_scalar)
+         call ice_read_nc(fid, recnum-1, 'v', vocn_prev, debug_forcing,  field_loc=field_loc_center, field_type=field_type_scalar)
+      else
+         sst_prev  = sst_curr
+         sss_prev  = sss_curr
+         uocn_prev = uocn_curr
+         vocn_prev = vocn_curr
+      endif
+      call ice_close_nc(fid)
+      !-------------------------------------------------------------------
+      ! 5) deal with NaN/Inf in temporary arrays using ieee_is_nan
+      !-------------------------------------------------------------------
+      do iblk = 1, nblocks
+         do j = 1, ny_block
+            do i = 1, nx_block
+               ! Current record
+               if (ieee_is_nan(sst_curr(i,j,iblk)) .or. abs(sst_curr(i,j,iblk)) > huge_val) then
+                  sst_curr(i,j,iblk) = sst_fallback
+               endif
+               if (ieee_is_nan(sss_curr(i,j,iblk)) .or. abs(sss_curr(i,j,iblk)) > huge_val) then
+                  sss_curr(i,j,iblk) = sss_fallback
+               endif
+               if (ieee_is_nan(uocn_curr(i,j,iblk)) .or. abs(uocn_curr(i,j,iblk)) > huge_val) then
+                  uocn_curr(i,j,iblk) = uv_fallback
+               endif
+               if (ieee_is_nan(vocn_curr(i,j,iblk)) .or. abs(vocn_curr(i,j,iblk)) > huge_val) then
+                  vocn_curr(i,j,iblk) = uv_fallback
+               endif
+               ! Previous record
+               if (ieee_is_nan(sst_prev(i,j,iblk)) .or. abs(sst_prev(i,j,iblk)) > huge_val) then
+                  sst_prev(i,j,iblk) = sst_fallback
+               endif
+               if (ieee_is_nan(sss_prev(i,j,iblk)) .or. abs(sss_prev(i,j,iblk)) > huge_val) then
+                  sss_prev(i,j,iblk) = sss_fallback
+               endif
+               if (ieee_is_nan(uocn_prev(i,j,iblk)) .or. abs(uocn_prev(i,j,iblk)) > huge_val) then
+                  uocn_prev(i,j,iblk) = uv_fallback
+               endif
+               if (ieee_is_nan(vocn_prev(i,j,iblk)) .or. abs(vocn_prev(i,j,iblk)) > huge_val) then
+                  vocn_prev(i,j,iblk) = uv_fallback
+               endif
+            enddo
+         enddo
+      enddo
+      do iblk = 1, nblocks
+         do j = 1, ny_block
+            do i = 1, nx_block
+               if (ieee_is_nan(sst(i,j,iblk)) .or. abs(sst(i,j,iblk)) > huge_val) then
+                  sst(i,j,iblk) = c1intp * sst_prev(i,j,iblk) + c2intp * sst_curr(i,j,iblk)
+               endif
+            enddo
+         enddo
+      enddo
+      if (debug_forcing .or. local_debug) then
+         if (my_task == master_task) write(nu_diag,*) subname, ' global min/max after "NaN-fix in SST"'
+         vmin = global_minval(sst, distrb_info, tmask)
+         vmax = global_maxval(sst, distrb_info, tmask)
+         if (my_task == master_task) write(nu_diag,*) subname, '  sst  ', vmin, vmax
+      endif
+      !-------------------------------------------------------------------
+      ! 6) apply forcing using openmpi 
+      !-------------------------------------------------------------------
+      if (debug_forcing .or. local_debug) then
+         if (my_task == master_task) write(nu_diag,*) subname, ' global min/max before "APPLY"'
+         vmin = global_minval(sst, distrb_info, tmask)
+         vmax = global_maxval(sst, distrb_info, tmask)
+         if (my_task == master_task) write(nu_diag,*) subname, '  sst  ', vmin, vmax
+      endif
+      !$OMP PARALLEL DO PRIVATE(iblk, j, i, sst_interp, sss_interp, u_interp, v_interp)
+      do iblk = 1, nblocks
+         do j = 1, ny_block
+            do i = 1, nx_block
+               ! Interpolate forcing data
+               sst_interp = c1intp * sst_prev(i,j,iblk) + c2intp * sst_curr(i,j,iblk)
+               sss_interp = c1intp * sss_prev(i,j,iblk) + c2intp * sss_curr(i,j,iblk)
+               u_interp   = c1intp * uocn_prev(i,j,iblk) + c2intp * uocn_curr(i,j,iblk)
+               v_interp   = c1intp * vocn_prev(i,j,iblk) + c2intp * vocn_curr(i,j,iblk)
+               ! CORRECTED MASK LOGIC: hm > p5 = OCEAN, else = LAND
+               if (hm(i,j,iblk) > p5) then
+                  ! OCEAN point
+                  ! SST: Use direct assignment on first call, restoring afterwards
+                  if (first_call) then
+                     ! First call: directly assign forcing SST
+                     sst(i,j,iblk) = sst_interp
+                  elseif (restore_ocn) then
+                     ! Subsequent calls with restoring: gradual adjustment
+                     sst(i,j,iblk) = sst(i,j,iblk) + (sst_interp - sst(i,j,iblk)) * dt / trest
+                  else
+                     ! No restoring: direct assignment
+                     sst(i,j,iblk) = sst_interp
+                  endif
+                  ! SSS, uocn, vocn: always direct assignment
+                  sss(i,j,iblk) = sss_interp
+                  uocn(i,j,iblk) = u_interp
+                  vocn(i,j,iblk) = v_interp
+                  ! Upper bound for SST
+                  if (sst(i,j,iblk) > sst_thresh) sst(i,j,iblk) = sst_thresh
+                  ! SSS bounds
+                  if (sss(i,j,iblk) < sss_low_thresh)  sss(i,j,iblk) = sss_low_thresh
+                  if (sss(i,j,iblk) > sss_high_thresh) sss(i,j,iblk) = sss_high_thresh
+                  ! Velocity bounds
+                  if (abs(uocn(i,j,iblk)) > ispd_thresh) uocn(i,j,iblk) = c0
+                  if (abs(vocn(i,j,iblk)) > ispd_thresh) vocn(i,j,iblk) = c0
+               else
+                  ! LAND point
+                  sst (i,j,iblk) = c0
+                  sss (i,j,iblk) = c0
+                  uocn(i,j,iblk) = c0
+                  vocn(i,j,iblk) = c0
+               endif
+            enddo
+         enddo
+      enddo
+      !$OMP END PARALLEL DO
+      ! After first call, disable direct assignment
+      first_call = .false.
+      !-------------------------------------------------------------------
+      ! 7) update freezing temperature and write out globals to diagnostic
+      !-------------------------------------------------------------------
+      call ocn_freezing_temperature
+      if (debug_forcing .or. local_debug) then
+         if (my_task == master_task) write(nu_diag,*) subname, ' global min/max at "END" of subroutine'
+         vmin = global_minval(sst, distrb_info, tmask)
+         vmax = global_maxval(sst, distrb_info, tmask)
+         if (my_task == master_task) write(nu_diag,*) subname, '  sst  ', vmin, vmax
+         vmin = global_minval(sss, distrb_info, tmask)
+         vmax = global_maxval(sss, distrb_info, tmask)
+         if (my_task == master_task) write(nu_diag,*) subname, '  sss  ', vmin, vmax
+         vmin = global_minval(uocn, distrb_info, umask)
+         vmax = global_maxval(uocn, distrb_info, umask)
+         if (my_task == master_task) write(nu_diag,*) subname, '  uocn ', vmin, vmax
+         vmin = global_minval(vocn, distrb_info, umask)
+         vmax = global_maxval(vocn, distrb_info, umask)
+         if (my_task == master_task) write(nu_diag,*) subname, '  vocn ', vmin, vmax
+      endif
+   end subroutine AFIM_data
 
   !=======================================================================
   subroutine compute_shortwave(nx_block, ny_block, ilo, ihi, jlo, jhi, TLON, TLAT, hm, Qa, cldf, fsw)
@@ -4468,419 +6023,4 @@ contains
 
  end subroutine init_snowtable
 
-!  ! =======================================================================
-!  subroutine AFIM_ocn_init
-!    !
-!    ! Reads in monthly (or, eventually! daily ocean) forcing fields that are stored in
-!    ! yearly-files. The code is adapted from the ocn_data_ncar_init subroutine (above)
-!    ! The code has been largely developed with ACCESS-OM2 ocean field output but should work
-!    ! equally well on other climatological datasets that are formatted consistent to this code.
-!    !
-!    ! List of ocean forcing fields:
-!    ! 1  sst------temperature---------------------------(K)
-!    ! 2  sss------salinity------------------------------(psu=ppt)
-!    ! 3  u--------surface u current---------------------(m/s)
-!    ! 4  v--------surface v current---------------------(m/s)
-!    !
-!    ! Note the code below searches for the variable as you read it: "sst", "sss", "u", "v".
-!    ! In the NetCDF file the variables must be named this way and have the indicated units.
-!    !
-!    ! Another important point is that ocean variables are on an Arakawa B-grid, which is to
-!    ! say that dynamics on grid cell corners and thermodynamics are calculated at the gridcell
-!    ! centre. Or in other words, for this specific forcing fields, u/v variables are assumed
-!    ! to be on the U-grid (corners), while sst/sss are on the T-grid (centre).
-!    !
-!    ! authors: Noah Day, University of Adelaide
-!    !          DP@H2O, University of Tasmania (IMAS & AAPP)
-!    !
-!    use ice_blocks, only: nx_block, ny_block
-!    use ice_domain_size, only: max_blocks
-!    use ice_domain, only: nblocks, distrb_info
-!    use ice_flux, only: sss, sst, Tf, uocn, vocn, frzmlt
-!    use ice_grid, only: hm, tmask, umask
-!    use ice_global_reductions, only: global_minval, global_maxval
-!    use ice_restart_shared, only: runtype
-!    use ice_calendar, only: myear
-!    use icepack_parameters, only: puny
-!    use ice_read_write, only: ice_read_nc, ice_read_nc_uv
-! #ifdef USE_NETCDF
-!    use netcdf
-! #endif
-!    integer (kind=int_kind) :: n   , & ! field index
-!                               m   , & ! month index
-!                               d   , & ! day index
-!                               k   , & ! time-index in loop
-!                               ti_ttl , & !total number of indeces in time loop
-!                               nrec, & ! record number for direct access
-!                               nbits
-!    ! variable names to search for in file
-!    character(char_len) :: vname(ndfld) 
-!    data vname / 'sst', 'sss', 'u', 'v' /
-!    integer (kind=int_kind) :: dimid     ! dimension id
-!    integer (kind=int_kind) :: status, & ! status flag
-!                               nlat  , & ! number of longitudes of data
-!                               nlon  , & ! number of latitudes  of data
-!                               nzlev     ! z level of currents
-!    integer (kind=int_kind) :: i, j, iblk, & ! horizontal indices
-!                               fid           ! file id for netCDF file
-!    character (char_len)                                           :: fieldname    ! field name in netcdf file
-!    real (kind=dbl_kind), dimension (nx_block,ny_block,max_blocks) :: work1
-!    real (kind=dbl_kind)                                           :: vmin, vmax
-!    character(len=*), parameter                                    :: subname = '(AFIM_ocn_init)'
-!    if (local_debug .and. my_task == master_task) write(nu_diag,*) subname,'fdbg start'
-!    if (my_task == master_task) then
-!       write (nu_diag,*) 'NOTE: evp_prep calculates surface tilt stress from geostrophic currents, not data from ocean forcing file'
-!       write (nu_diag,*) 'NOTE: ice_dyn_evp.F90 is where evp_prep calculation'
-!       if (restore_ocn) write (nu_diag,*) 'OCEAN restoring timescale = ',trestore,' days'
-!       F_ocn = trim(ocn_data_dir)//'/'//trim(oceanmixed_file) 
-!    endif ! master_task
-!    if (trim(ocn_data_format) == 'nc') then
-! #ifdef USE_NETCDF
-!       if (my_task == master_task) then
-!          call ice_open_nc(F_ocn, fid)
-!          status = nf90_inq_dimid(fid,'xt_ocean',dimid)
-!          status = nf90_inquire_dimension(fid,dimid,len=nlon)
-!          status = nf90_inq_dimid(fid,'yt_ocean',dimid)
-!          status = nf90_inquire_dimension(fid,dimid,len=nlat)
-!          if( nlon .ne. nx_global ) then
-!             call abort_ice (error_message=subname//'ice: ocn frc file nlon ne nx_global', file=__FILE__, line=__LINE__)
-!          endif
-!          if( nlat .ne. ny_global ) then
-!             call abort_ice (error_message=subname//'ice: ocn frc file nlat ne ny_global', file=__FILE__, line=__LINE__)
-!          endif
-!       endif ! master_task
-!       ! Read in ocean forcing data for all 12 months or all 365 days
-!       do n=1,ndfld
-!          if (trim(ocn_data_freq) == 'monthly') then
-!             ti_ttl = m_per_yr
-!          else
-!             ti_ttl = d_per_yr
-!          endif
-!          do k=1,ti_ttl
-!             ! This is where we make the assumption that u/v are on the U-grid.
-!             if (n == 3 .or. n == 4) then ! 2D currents surface currents
-!                 call ice_read_nc(fid, k, vname(n), work1, debug_forcing, field_loc_NEcorner, field_type_vector)
-!             else
-!                 call ice_read_nc(fid, k, vname(n), work1, debug_forcing, field_loc_center, field_type_scalar)
-!             endif
-!             ! call ice_read_nc(fid, k, vname(n), work1, debug_forcing, field_loc_center, field_type_scalar)
-!             ! Next we need to get SST into degrees C, as that is what CICE thermodynamics sub-routines use
-!             ! And we then need to put the ocean forcing from the monthly (or, eventually!, daily) samples
-!             ! into our large ocn_frc_m_AFIM matrix that has dimensions: BLOCK, I, J, N, K. Where BLOCK
-!             ! is particular to the threaded processor, I and J are the respective grid and x and y (or
-!             ! grid cell centres locations), N is field (sst, sss, u, v), and K is the time-step (either
-!             ! 1 to 12 for months, or 1 to 365 for days).
-!             if (n.eq.1) then
-!                ocn_frc_m_AFIM(:,:,:,n,k) = work1(:,:,:) - 273.15 
-!             else
-!                ocn_frc_m_AFIM(:,:,:,n,k) = work1(:,:,:)
-!             endif
-!          enddo               ! month loop
-!       enddo               ! field loop
-!       if (my_task == master_task) call ice_close_nc(fid)
-! #else
-!       call abort_ice(subname//'ERROR: USE_NETCDF cpp not defined for '//trim(F_ocn), file=__FILE__, line=__LINE__)
-! #endif
-!       ! check ocean forcing is within reason
-!        do iblk = 1, nblocks
-!           do j = 1, ny_block
-!             do i = 1, nx_block
-!                ocn_frc_m_AFIM(i,j,iblk,1,1) = max(ocn_frc_m_AFIM(i,j,iblk,1,1) ,Tf(i,j,iblk)) ! Making sure sst is not less than freezing temperature
-!                ocn_frc_m_AFIM(i,j,iblk,2,1) = max(ocn_frc_m_AFIM(i,j,iblk,2,1), c0) ! Making sure sss is not negative
-!                if (ocn_frc_m_AFIM(i,j,iblk,3,1) .gt. c5) then 
-!                   ocn_frc_m_AFIM(i,j,iblk,3,1) = min(ocn_frc_m_AFIM(i,j,iblk,3,1), c5) ! Making sure u-velocity isn't unrealistic
-!                elseif (uocn(i,j,iblk) .lt. -c5) then 
-!                   ocn_frc_m_AFIM(i,j,iblk,3,1) = max(ocn_frc_m_AFIM(i,j,iblk,3,1), -c5) ! Making sure v-velocity isn't unrealistic
-!                endif
-!                if (ocn_frc_m_AFIM(i,j,iblk,4,1) .gt. c5) then 
-!                   ocn_frc_m_AFIM(i,j,iblk,4,1) = min(ocn_frc_m_AFIM(i,j,iblk,4,1), c5) ! Making sure v-velocity isn't unrealistic
-!                elseif (ocn_frc_m_AFIM(i,j,iblk,4,1) .lt. -c5) then 
-!                   ocn_frc_m_AFIM(i,j,iblk,4,1) = max(ocn_frc_m_AFIM(i,j,iblk,3,1), -c5) ! Making sure v-velocity isn't unrealistic
-!                endif
-!             enddo
-!          enddo
-!        enddo
-!       ! Next we need to 'initialise' the forcing for the appropriate month and put this 
-!       do iblk = 1, nblocks
-!          do j = 1, ny_block
-!             do i = 1, nx_block
-!                ! Noah observed in his mid-year 'restarts' that a noticeable 'spike' or 'jump' in sst
-!                ! occurred and created 'problems' for his restarts. This prompted him to comment out
-!                ! sst(i,j,iblk) = ocn_frc_m_AFIM(i,j,iblk,1,mmonth)
-!                ! I am putting this back in here for the moment as I am starting a run from ICs that
-!                ! are at the beginning of the year
-!                sst(i,j,iblk)  = ocn_frc_m_AFIM(i,j,iblk,1,mmonth)
-!                sss(i,j,iblk)  = ocn_frc_m_AFIM(i,j,iblk,2,mmonth)
-!                uocn(i,j,iblk) = ocn_frc_m_AFIM(i,j,iblk,3,mmonth)
-!                vocn(i,j,iblk) = ocn_frc_m_AFIM(i,j,iblk,4,mmonth)
-!                ! Here we are finding absurdly high values of sea surface salinity and setting this to zero
-!                sss(i,j,iblk)  = max(sss(i,j,iblk),c0)
-!                ! Here we are finding absurdly high values of sea surface currents and setting these to zero
-!                if (ABS(uocn(i,j,iblk)) .gt. c5) uocn(i,j,iblk) = c0
-!                if (ABS(vocn(i,j,iblk)) .gt. c5) vocn(i,j,iblk) = c0
-!                ! Freeze-melt is calculated in ICEPACK, so just set 'frzmlt' to whatever its default value is
-!                frzmlt(i,j,iblk) = frzmlt(i,j,iblk)
-!                ! This code is a relic and will likely be removed
-!                ! if (runtype.eq.'initial') then ! Freeze/melt is calculated within CICE
-!                !    ! Initialise to 1.0 just to begin the run
-!                !    !frzmlt(i,j,iblk) = -1.0_dbl_kind!(-1)*ocn_frc_m_AFIM(i,j,iblk,1,1)
-!                !    !frzmlt(i,j,iblk) = frzmlt(i,j,iblk)
-!                !    !if (j .lt. (ny_block/4)) then
-!                !    !   frzmlt(i,j,iblk) = 1.0_dbl_kind
-!                !    !else
-!                !    !   frzmlt(i,j,iblk) = -1.0_dbl_kind
-!                !    !endif
-!                !    frzmlt(i,j,iblk) = frzmlt(i,j,iblk)
-!                ! else
-!                !    frzmlt(i,j,iblk) = frzmlt(i,j,iblk)
-!                ! endif
-!             enddo
-!          enddo
-!       enddo
-!       if (debug_forcing) then
-!          if (my_task == master_task) write (nu_diag,*) 'AFIM_ocn_init'
-!          vmin = global_minval(ocn_frc_m_AFIM(:,:,:,1,1),distrb_info,tmask)
-!          vmax = global_maxval(ocn_frc_m_AFIM(:,:,:,1,1),distrb_info,tmask)
-!          if (my_task.eq.master_task) write (nu_diag,*) 'sst',vmin,vmax
-!          vmin = global_minval(ocn_frc_m_AFIM(:,:,:,2,1),distrb_info,tmask)
-!          vmax = global_maxval(ocn_frc_m_AFIM(:,:,:,2,1),distrb_info,tmask)
-!          if (my_task.eq.master_task) write (nu_diag,*) 'sss',vmin,vmax
-!          vmin = global_minval(ocn_frc_m_AFIM(:,:,:,3,1),distrb_info,umask)
-!          vmax = global_maxval(ocn_frc_m_AFIM(:,:,:,3,1),distrb_info,umask)
-!          if (my_task.eq.master_task) write (nu_diag,*) 'uocn',vmin,vmax
-!          vmin = global_minval(ocn_frc_m_AFIM(:,:,:,4,1),distrb_info,umask)
-!          vmax = global_maxval(ocn_frc_m_AFIM(:,:,:,4,1),distrb_info,umask)
-!          if (my_task.eq.master_task) write (nu_diag,*) 'vocn',vmin,vmax
-!          vmin = global_minval(frzmlt(:,:,:),distrb_info,umask)
-!          vmax = global_maxval(frzmlt(:,:,:),distrb_info,umask)
-!          if (my_task.eq.master_task) write (nu_diag,*) 'frzmlt',vmin,vmax
-!          if (my_task == master_task) write (nu_diag,*) 'AFIM_ocn_init2'
-!          vmin = global_minval(ocn_frc_m_AFIM(:,:,:,1,2),distrb_info,tmask)
-!          vmax = global_maxval(ocn_frc_m_AFIM(:,:,:,1,2),distrb_info,tmask)
-!          if (my_task.eq.master_task) write (nu_diag,*) 'sst',vmin,vmax
-!          vmin = global_minval(ocn_frc_m_AFIM(:,:,:,2,2),distrb_info,tmask)
-!          vmax = global_maxval(ocn_frc_m_AFIM(:,:,:,2,2),distrb_info,tmask)
-!          if (my_task.eq.master_task) write (nu_diag,*) 'sss',vmin,vmax
-!          vmin = global_minval(ocn_frc_m_AFIM(:,:,:,3,2),distrb_info,umask)
-!          vmax = global_maxval(ocn_frc_m_AFIM(:,:,:,3,2),distrb_info,umask)
-!          if (my_task.eq.master_task)  write (nu_diag,*) 'uocn',vmin,vmax
-!          vmin = global_minval(ocn_frc_m_AFIM(:,:,:,4,2),distrb_info,umask)
-!          vmax = global_maxval(ocn_frc_m_AFIM(:,:,:,4,2),distrb_info,umask)
-!          if (my_task.eq.master_task) write (nu_diag,*) 'vocn',vmin,vmax
-!          vmin = global_minval(frzmlt(:,:,:),distrb_info,umask)
-!          vmax = global_maxval(frzmlt(:,:,:),distrb_info,umask)
-!          if (my_task.eq.master_task) write (nu_diag,*) 'frzmlt',vmin,vmax
-!       endif
-!    endif
-!  end subroutine AFIM_ocn_init
-
-!  !=======================================================================
-!  subroutine AFIM_ocn(dt)
-!    !
-!    ! Now we are in the time-step. This differs from the atmospheric forcings, which
-!    ! I'm still trying to understand, 'why'. 
-!    ! Interpolate monthly ocean data to timestep.
-!    ! Restore sst if desired. sst is updated with surface fluxes in ice_ocean.F.
-!    use ice_blocks, only: nx_block, ny_block
-!    use ice_global_reductions, only: global_minval, global_maxval
-!    use ice_domain, only: nblocks, distrb_info
-!    use ice_domain_size, only: max_blocks
-!    use ice_flux, only: sss, sst, Tf, uocn, vocn, ss_tltx, ss_tlty, qdp, hmix
-!    use ice_restart_shared, only: restart
-!    use ice_grid, only: hm, tmask, umask
-!    real (kind=dbl_kind), intent(in) :: dt ! time step
-!    integer (kind=int_kind) :: i, j, n, iblk   , &
-!                               ixm,ixp         , & ! record numbers for neighboring months
-!                               maxrec          , & ! maximum record number
-!                               recslot         , & ! spline slot for current record
-!                               midmonth        , & ! middle day of month
-!                               ti_ttl
-!    real (kind=dbl_kind) :: vmin, vmax
-!    real (kind=dbl_kind), dimension (nx_block,ny_block,max_blocks) :: work1
-!    character(len=*), parameter :: subname = '(AFIM_ocn)'
-!    if (local_debug .and. my_task == master_task) write(nu_diag,*) subname,'fdbg start'
-!    if (my_task == master_task) write (nu_diag,*) 'AFIM_ocn'
-!    !-------------------------------------------------------------------
-!    ! monthly data
-!    ! Assume that monthly data values are located in the middle of the
-!    ! month.
-!    !-------------------------------------------------------------------
-!    if (trim(ocn_data_freq) == 'monthly') then
-!       ti_ttl = m_per_yr
-!       midmonth = 15  ! data is given on 15th of every month
-!       ixm  = mod(mmonth+ti_ttl-2,ti_ttl) + 1
-!       ixp  = mod(mmonth,         ti_ttl) + 1
-!       if (mday >= midmonth) ixm = -99  ! other two points will be used
-!       if (mday <  midmonth) ixp = -99
-!       if (my_task.eq.master_task) write (nu_diag,*) 'AFIM Ocean Forcing'
-!       if (my_task.eq.master_task) write (nu_diag,*) 'mmonth: ',mmonth
-!       if (my_task.eq.master_task) write (nu_diag,*) 'ixm, ixp: ',ixm,ixp
-!       ! Determine whether interpolation will use values 1:2 or 2:3
-!       ! recslot = 2 means we use values 1:2, with the current value (2) in the second slot
-!       ! recslot = 1 means we use values 2:3, with the current value (2) in the first slot
-!       recslot = 1                             ! latter half of month
-!       if (mday < midmonth) recslot = 2        ! first half of month
-!       ! Find interpolation coefficients
-!       call interp_coeff_monthly (recslot)
-!       sst_data(:,:,:,:) = c0
-!       do n = ndfld, 1, -1
-!          do iblk = 1, nblocks
-!             ! use sst_data arrays as temporary work space until n=1
-!             if (ixm /= -99) then  ! first half of month
-!                do i = 1, nx_block
-!                   do j = 1, ny_block
-!                      sst_data(i,j,1,iblk) = ocn_frc_m_AFIM(i,j,iblk,n,ixm)
-!                      sst_data(i,j,2,iblk) = ocn_frc_m_AFIM(i,j,iblk,n,mmonth)
-!                   enddo
-!                enddo
-!             else                 ! second half of month
-!                sst_data(:,:,1,iblk) = ocn_frc_m_AFIM(:,:,iblk,n,mmonth)
-!                sst_data(:,:,2,iblk) = ocn_frc_m_AFIM(:,:,iblk,n,ixp)
-!             endif
-!             if (debug_forcing) then
-!                if (my_task.eq.master_task) then
-!                   write(nu_diag,*) 'ixm', ixm
-!                   write(nu_diag,*) 'ixp', ixp
-!                   write(nu_diag,*) 'mmonth', mmonth
-!                endif
-!             endif
-!          enddo
-!          call interpolate_data (sst_data,work1)
-!          do j = 1, ny_block
-!             do i = 1, nx_block
-!                if (n == 2) sss    (i,j,:) = c0
-!                if (n == 3) uocn   (i,j,:) = c0
-!                if (n == 4) vocn   (i,j,:) = c0
-!                do iblk = 1, nblocks
-!                   if (hm(i,j,iblk) == c1) then
-!                      if (n == 2) sss    (i,j,iblk) = work1(i,j,iblk)
-!                      if (n == 3) uocn   (i,j,iblk) = work1(i,j,iblk)
-!                      if (n == 4) vocn   (i,j,iblk) = work1(i,j,iblk)
-!                   endif
-!                enddo
-!             enddo
-!          enddo
-!       enddo
-!    else ! DAILY OCEAN DATA
-!       ti_ttl = d_per_yr
-!       ! midmonth = 15  ! data is given on 15th of every month
-!       ! ixm  = mod(mmonth+ti_ttl-2,ti_ttl) + 1
-!       ! ixp  = mod(mmonth,         ti_ttl) + 1
-!       ! if (mday >= midmonth) ixm = -99  ! other two points will be used
-!       ! if (mday <  midmonth) ixp = -99
-!       ! if (my_task.eq.master_task) write (nu_diag,*) 'AFIM Ocean Forcing'
-!       ! if (my_task.eq.master_task) write (nu_diag,*) 'mmonth: ',mmonth
-!       ! if (my_task.eq.master_task) write (nu_diag,*) 'ixm, ixp: ',ixm,ixp
-!       ! ! Determine whether interpolation will use values 1:2 or 2:3
-!       ! ! recslot = 2 means we use values 1:2, with the current value (2) in the second slot
-!       ! ! recslot = 1 means we use values 2:3, with the current value (2) in the first slot
-!       ! recslot = 1                             ! latter half of month
-!       ! if (mday < midmonth) recslot = 2        ! first half of month
-!       ! ! Find interpolation coefficients
-!       ! call interp_coeff_monthly (recslot)
-!       ! sst_data(:,:,:,:) = c0
-!       ! do n = ndfld, 1, -1
-!       !    do iblk = 1, nblocks
-!       !       ! use sst_data arrays as temporary work space until n=1
-!       !       if (ixm /= -99) then  ! first half of month
-!       !          do i = 1, nx_block
-!       !             do j = 1, ny_block
-!       !                sst_data(i,j,1,iblk) = ocn_frc_m_AFIM(i,j,iblk,n,ixm)
-!       !                sst_data(i,j,2,iblk) = ocn_frc_m_AFIM(i,j,iblk,n,mmonth)
-!       !             enddo
-!       !          enddo
-!       !       else                 ! second half of month
-!       !          sst_data(:,:,1,iblk) = ocn_frc_m_AFIM(:,:,iblk,n,mmonth)
-!       !          sst_data(:,:,2,iblk) = ocn_frc_m_AFIM(:,:,iblk,n,ixp)
-!       !       endif
-!       !       if (debug_forcing) then
-!       !          if (my_task.eq.master_task) then
-!       !             write(nu_diag,*) 'ixm', ixm
-!       !             write(nu_diag,*) 'ixp', ixp
-!       !             write(nu_diag,*) 'mmonth', mmonth
-!       !          endif
-!       !       endif
-!       !    enddo
-!       !    call interpolate_data (sst_data,work1)
-!       !    do j = 1, ny_block
-!       !       do i = 1, nx_block
-!       !          if (n == 2) sss    (i,j,:) = c0
-!       !          if (n == 3) uocn   (i,j,:) = c0
-!       !          if (n == 4) vocn   (i,j,:) = c0
-!       !          do iblk = 1, nblocks
-!       !             if (hm(i,j,iblk) == c1) then
-!       !                if (n == 2) sss    (i,j,iblk) = work1(i,j,iblk)
-!       !                if (n == 3) uocn   (i,j,iblk) = work1(i,j,iblk)
-!       !                if (n == 4) vocn   (i,j,iblk) = work1(i,j,iblk)
-!       !             endif
-!       !          enddo
-!       !       enddo
-!       !    enddo
-!       ! enddo
-!    endif
-!    do j = 1, ny_block
-!       do i = 1, nx_block
-!          ! Here we are finding absurdly high values of sea surface salinity and setting this to zero
-!          sss(i,j,:) = max(sss(i,j,:), c0)
-!       enddo
-!    enddo
-!    call ocn_freezing_temperature
-!    do iblk = 1, nblocks
-!       do j = 1, ny_block
-!          do i = 1, nx_block
-!             work1(i,j,iblk) = max(sst(i,j,iblk), Tf(i,j,iblk))
-!          enddo
-!       enddo
-!    enddo
-!    if (restore_ocn) then
-!       do j = 1, ny_block
-!          do i = 1, nx_block
-!             sst(i,j,:) = sst(i,j,:) + (work1(i,j,:)-sst(i,j,:))*dt/trest
-!          enddo
-!       enddo
-!       !     else sst is only updated in ice_ocean.F
-!    endif
-!    ! initialize sst properly on first step
-!    if (istep1 <= 1 .and. .not. (restart)) then
-!       call interpolate_data (sst_data,sst)
-!       !$OMP PARALLEL DO PRIVATE(iblk,i,j)
-!       do iblk = 1, nblocks
-!          do j = 1, ny_block
-!             do i = 1, nx_block
-!                if (hm(i,j,iblk) == c1) then
-!                   sst(i,j,iblk) =  max (sst(i,j,iblk), Tf(i,j,iblk))
-!                else ! ND: It is land!
-!                   sst(i,j,iblk)  = c0
-!                   sss(i,j,iblk)  = c0
-!                   uocn(i,j,iblk) = c0
-!                   vocn(i,j,iblk) = c0
-!                endif
-!                ! Turning off velocities in the NH
-!                ! Making sure ocean currents are realistic
-!                if (ABS(uocn(i,j,iblk)) .gt. c5) uocn(i,j,iblk) = c0
-!                if (ABS(vocn(i,j,iblk)) .gt. c5) vocn(i,j,iblk) = c0
-!             enddo
-!          enddo
-!       enddo
-!    endif
-!    if (debug_forcing) then
-!       if (my_task == master_task) write (nu_diag,*) 'AFIM_ocn'
-!       vmin = global_minval(sst,distrb_info,tmask)
-!       vmax = global_maxval(sst,distrb_info,tmask)
-!       if (my_task.eq.master_task) write (nu_diag,*) 'sst',vmin,vmax
-!       vmin = global_minval(sss,distrb_info,tmask)
-!       vmax = global_maxval(sss,distrb_info,tmask)
-!       if (my_task.eq.master_task) write (nu_diag,*) 'sss',vmin,vmax
-!       vmin = global_minval(uocn,distrb_info,umask)
-!       vmax = global_maxval(uocn,distrb_info,umask)
-!       if (my_task.eq.master_task) write (nu_diag,*) 'uocn',vmin,vmax
-!       vmin = global_minval(vocn,distrb_info,umask)
-!       vmax = global_maxval(vocn,distrb_info,umask)
-!       if (my_task.eq.master_task) write (nu_diag,*) 'vocn',vmin,vmax
-!    endif
-!  end subroutine AFIM_ocn
-
- !=======================================================================
- !=======================================================================
- !=======================================================================
 end module ice_forcing
