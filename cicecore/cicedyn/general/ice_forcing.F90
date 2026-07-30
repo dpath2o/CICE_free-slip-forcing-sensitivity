@@ -3189,36 +3189,12 @@ contains
              if (is_ant_fastice_forcing_cell(i,j,iblk,lat_cutoff)) then
                 precip(i,j,iblk) = era5_mod_fac * precip(i,j,iblk)
              endif
-             ! if (is_ant_coastal_ocean_cell(i,j,iblk,lat_cutoff)) then
-             !    precip(i,j,iblk) = era5_mod_fac * precip(i,j,iblk)
-             ! endif
           enddo
        enddo
     enddo
     !$OMP END PARALLEL DO
   end subroutine scale_era5_ant_coastal_precip
 
-  ! !=======================================================================
-  ! logical(kind=log_kind) function is_ant_coastal_ocean_cell(i, j, iblk, lat_cutoff)
-  !   ! Crude Antarctic coastal-ocean selector.
-  !   !
-  !   ! A cell is selected if:
-  !   !   1. it is ocean on the T grid,
-  !   !   2. it is south of lat_cutoff,
-  !   !   3. one of its four direct T-grid neighbours is land/boundary.
-  !   use ice_grid, only : hm, TLAT
-  !   integer(kind=int_kind), intent(in) :: i, j, iblk
-  !   real(kind=dbl_kind),    intent(in) :: lat_cutoff
-  !   logical(kind=log_kind) :: ocean_cell
-  !   logical(kind=log_kind) :: adjacent_land
-  !   ocean_cell    = hm(i,j,iblk) > p5
-  !   adjacent_land = .false.
-  !   if (i > 1       ) adjacent_land = adjacent_land .or. hm(i-1,j,iblk) <= p5
-  !   if (i < nx_block) adjacent_land = adjacent_land .or. hm(i+1,j,iblk) <= p5
-  !   if (j > 1       ) adjacent_land = adjacent_land .or. hm(i,j-1,iblk) <= p5
-  !   if (j < ny_block) adjacent_land = adjacent_land .or. hm(i,j+1,iblk) <= p5
-  !   is_ant_coastal_ocean_cell = ocean_cell .and. adjacent_land .and. TLAT(i,j,iblk) <= lat_cutoff
-  ! end function is_ant_coastal_ocean_cell
   !=======================================================================
   logical(kind=log_kind) function is_ant_fastice_forcing_cell(i, j, iblk, lat_cutoff)
     ! Antarctic fast-ice-relevant ocean selector.

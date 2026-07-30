@@ -5,10 +5,7 @@
 #PBS -l walltime=10:00:00
 #PBS -l ncpus=1232
 #PBS -l mem=700GB
-#PBS -l place=scatter
-#PBS -l jobfs=5GB
 #PBS -l storage=scratch/gv90+gdata/gv90+gdata/xp65
-#PBS -l storage=gdata/gv90+gdata/xp65
 #PBS -l wd
 #PBS -j oe
 #PBS -W umask=022
