@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620">
+  <rect width="1200" height="620" fill="#fbfaf6"/>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#222"/>
+    </marker>
+    <style>
+      .title { font-family: Georgia, 'Times New Roman', serif; font-size: 26px; font-weight: 700; fill: #1f1f1f; }
+      .head  { font-family: Georgia, 'Times New Roman', serif; font-size: 20px; font-weight: 700; fill: #1f1f1f; }
+      .body  { font-family: Georgia, 'Times New Roman', serif; font-size: 17px; fill: #222; }
+      .code  { font-family: 'Courier New', monospace; font-size: 15px; fill: #222; }
+      .note  { font-family: Georgia, 'Times New Roman', serif; font-size: 16px; font-style: italic; fill: #444; }
+      .box   { fill: none; stroke: #222; stroke-width: 2.1; stroke-linejoin: round; }
+      .soft  { fill: #f1efe7; stroke: #222; stroke-width: 1.8; }
+      .ice   { fill: #e9eef0; stroke: #222; stroke-width: 1.7; }
+      .ocean { fill: #e7f0f3; stroke: #222; stroke-width: 1.7; }
+      .arrow { fill: none; stroke: #222; stroke-width: 2.3; marker-end: url(#arrow); }
+      .thin  { fill: none; stroke: #555; stroke-width: 1.5; stroke-dasharray: 7 5; }
+    </style>
+  </defs>
+
+  <text x="48" y="48" class="title">Where the mixed-layer slab lives: CICE supplies H; Icepack applies H</text>
+
+  <path class="box" d="M55 110 L286 106 L292 270 L52 274 Z"/>
+  <text x="74" y="140" class="head">Ocean forcing</text>
+  <text x="74" y="170" class="body">ORAS / climatology / test</text>
+  <text x="74" y="202" class="code">hmix_forcing(i,j,t)</text>
+  <text x="74" y="235" class="note">External information</text>
+  <text x="74" y="257" class="note">about slab depth</text>
+
+  <path class="box" d="M350 92 L652 98 L650 290 L345 284 Z"/>
+  <text x="369" y="127" class="head">CICE</text>
+  <text x="369" y="155" class="code">ice_flux.F90</text>
+  <text x="369" y="184" class="code">hmix(nx,ny,max_blocks)</text>
+  <text x="369" y="218" class="body">full T-grid field</text>
+  <text x="369" y="248" class="body">standalone default:</text>
+  <text x="369" y="272" class="code">hmix = hmix_0</text>
+
+  <path class="box" d="M350 348 L653 343 L658 505 L344 511 Z"/>
+  <text x="369" y="380" class="head">CICE wrapper</text>
+  <text x="369" y="408" class="code">ice_step_mod.F90</text>
+  <text x="369" y="437" class="code">ocean_mixed_layer()</text>
+  <text x="369" y="469" class="code">hmix=hmix(i,j,iblk)</text>
+  <text x="369" y="496" class="note">passed every mixed-layer call</text>
+
+  <path class="box" d="M735 116 L1144 110 L1148 504 L728 510 Z"/>
+  <text x="757" y="151" class="head">Icepack</text>
+  <text x="757" y="178" class="code">columnphysics/icepack_ocean.F90</text>
+  <text x="757" y="207" class="code">icepack_ocn_mixed_layer()</text>
+  <text x="757" y="244" class="body">Input:</text>
+  <text x="827" y="244" class="code">hmix  intent(in)</text>
+
+  <rect x="758" y="273" width="351" height="76" rx="4" class="ocean"/>
+  <text x="776" y="301" class="body">temperature tendency</text>
+  <text x="776" y="330" class="code">dT ~ F dt / (rho cp hmix)</text>
+
+  <rect x="758" y="370" width="351" height="86" rx="4" class="ice"/>
+  <text x="776" y="398" class="body">freeze / melt potential</text>
+  <text x="776" y="428" class="code">frzmlt = (Tf-T) rho cp hmix / dt</text>
+  <text x="776" y="449" class="note">then T is reset to Tf if supercooled</text>
+
+  <path d="M292 185 C318 183, 322 184, 346 184" class="arrow"/>
+  <path d="M499 288 C500 311, 500 320, 500 342" class="arrow"/>
+  <path d="M658 428 C689 428, 703 408, 728 407" class="arrow"/>
+
+  <text x="297" y="165" class="note">update</text>
+  <text x="514" y="321" class="note">current field</text>
+  <text x="668" y="390" class="note">one grid cell</text>
+
+  <path d="M55 564 C260 550, 455 578, 671 561 S1014 572, 1140 556" class="thin"/>
+  <text x="68" y="598" class="note">Key point: Icepack does not retain a previous hmix. CICE supplies the instantaneous depth; Icepack uses it as the slab heat capacity for that call.</text>
+</svg>
