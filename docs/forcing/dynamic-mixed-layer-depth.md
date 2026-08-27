@@ -53,14 +53,14 @@ real (kind=dbl_kind), intent(in) :: &
    dt            ! time step (s)
 ```
 
-That is the first key point: `hmix` is **not** an Icepack prognostic state variable in this scheme. Icepack receives the value supplied by CICE for the current call. The surface/ice/deep-ocean heat fluxes change **SST** according to:
+Icepack receives the value supplied by CICE for the current call. The surface/ice/deep-ocean heat fluxes change **SST** according to:
 
 ```fortran
 sst = sst + dt * ( (fsens_ocn + flat_ocn + flwout_ocn + flw + swabs) * (c1-aice) + fhocn + fswthru) / (cprho*hmix)
 sst = sst - qdp*dt/(cprho*hmix)
 ```
 
-Schematically,
+Analytically,
 
 $$
 \Delta T = \frac{F_{\mathrm{net}}\,\Delta t}{\rho c_p H},
@@ -85,7 +85,7 @@ frzmlt = min(max(frzmlt,-frzmlt_max),frzmlt_max)
 if (sst <= Tf) sst = Tf
 ```
 
-The same current `hmix` is therefore used both to calculate the **SST* tendency and to convert any supercooling relative to `Tf` into a freezing potential.
+The same current `hmix` is therefore used both to calculate the *SST* tendency and to convert any supercooling relative to `Tf` into a freezing potential.
 
 ### 1.2 CICE: `hmix` is a full T-grid field
 
@@ -134,28 +134,6 @@ call icepack_ocn_mixed_layer( &
 ```
 
 There is no requirement in that interface that the value supplied at timestep $n+1$ be equal to the value supplied at timestep $n$.
-
-### 1.4 Time-varying MLD is already represented in the CICE forcing architecture
-
-The existing *NCAR-style* ocean forcing pathway in:
-
-```text
-cicecore/cicedyn/general/ice_forcing.F90
-```
-
-includes:
-
-```fortran
-data vname / 'T', 'S', 'hblt', 'U', 'V', 'dhdx', 'dhdy', 'qdp' /
-```
-
-and maps the boundary/mixed-layer depth field (`hblt`) into CICE `hmix`. This is useful about the intended architecture: a spatially and temporally varying mixed-layer depth is not foreign to the CICE to Icepack interface. However, the legacy NCAR pathway imposes a lower bound equivalent to the default mixed-layer depth:
-
-```fortran
-hmix(i,j,iblk) = max(mixed_layer_depth_default, work1(i,j,iblk))
-```
-
-with `mixed_layer_depth_default = 60 m` in my experiments thus. **That 60-m floor should not be copied into the ORAS Antarctic experiment.** It would remove much of the shallow coastal and summer MLD variability that this experiment is intended to test. The ORAS pathway *might* instead use an explicit, scientifically chosen `hmix_min`, `hmix_max`, and bathymetry-aware limit.
 
 ---
 
