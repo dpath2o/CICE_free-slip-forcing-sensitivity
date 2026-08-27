@@ -85,3 +85,27 @@ Thu Jul 30 12:19:37 AEST 2026 ./cice.submit: free-slip job submitted
 Thu Jul 30 17:50:42 AEST 2026 /local/spool/pbs/mom_priv/jobs/175085427.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/cice.runlog.260730-122006
 Thu Jul 30 17:50:43 AEST 2026 /local/spool/pbs/mom_priv/jobs/175085427.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/ice_diag.d
 Thu Jul 30 17:50:43 AEST 2026 /local/spool/pbs/mom_priv/jobs/175085427.gadi-pbs.SC: CICE run did NOT complete
+Fri Jul 31 09:41:01 AEST 2026 ./cice.submit: free-slip job submitted
+Fri Jul 31 15:19:44 AEST 2026 /local/spool/pbs/mom_priv/jobs/175130985.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/cice.runlog.260731-094738
+Fri Jul 31 15:19:45 AEST 2026 /local/spool/pbs/mom_priv/jobs/175130985.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/ice_diag.d
+Fri Jul 31 15:19:45 AEST 2026 /local/spool/pbs/mom_priv/jobs/175130985.gadi-pbs.SC: CICE run completed successfully
+Sat Aug  1 13:26:16 AEST 2026 ./cice.submit: free-slip job submitted
+Sat Aug  1 18:44:21 AEST 2026 /local/spool/pbs/mom_priv/jobs/175246969.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/cice.runlog.260801-132713
+Sat Aug  1 18:44:21 AEST 2026 /local/spool/pbs/mom_priv/jobs/175246969.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/ice_diag.d
+Sat Aug  1 18:44:21 AEST 2026 /local/spool/pbs/mom_priv/jobs/175246969.gadi-pbs.SC: CICE run completed successfully
+Sun Aug  2 10:43:57 AEST 2026 ./cice.submit: free-slip job submitted
+Sun Aug  2 15:40:34 AEST 2026 /local/spool/pbs/mom_priv/jobs/175280234.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/cice.runlog.260802-104416
+Sun Aug  2 15:40:34 AEST 2026 /local/spool/pbs/mom_priv/jobs/175280234.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/ice_diag.d
+Sun Aug  2 15:40:34 AEST 2026 /local/spool/pbs/mom_priv/jobs/175280234.gadi-pbs.SC: CICE run completed successfully
+Mon Aug  3 10:55:58 AEST 2026 ./cice.submit: free-slip job submitted
+Mon Aug  3 15:59:40 AEST 2026 /local/spool/pbs/mom_priv/jobs/175309173.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/cice.runlog.260803-105636
+Mon Aug  3 15:59:40 AEST 2026 /local/spool/pbs/mom_priv/jobs/175309173.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/ice_diag.d
+Mon Aug  3 15:59:40 AEST 2026 /local/spool/pbs/mom_priv/jobs/175309173.gadi-pbs.SC: CICE run completed successfully
+Wed Aug  5 08:52:53 AEST 2026 ./cice.submit: free-slip job submitted
+Wed Aug  5 13:59:56 AEST 2026 /local/spool/pbs/mom_priv/jobs/175404086.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/cice.runlog.260805-085324
+Wed Aug  5 13:59:56 AEST 2026 /local/spool/pbs/mom_priv/jobs/175404086.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/ice_diag.d
+Wed Aug  5 13:59:56 AEST 2026 /local/spool/pbs/mom_priv/jobs/175404086.gadi-pbs.SC: CICE run completed successfully
+Thu Aug  6 07:35:22 AEST 2026 ./cice.submit: free-slip job submitted
+Thu Aug  6 12:40:18 AEST 2026 /local/spool/pbs/mom_priv/jobs/175498754.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/cice.runlog.260806-073649
+Thu Aug  6 12:40:18 AEST 2026 /local/spool/pbs/mom_priv/jobs/175498754.gadi-pbs.SC: CICE output file is /home/581/da1339/AFIM/src/CICE_free-slip-forcing-sensitivity/frcg-exp02/logs/ice_diag.d
+Thu Aug  6 12:40:18 AEST 2026 /local/spool/pbs/mom_priv/jobs/175498754.gadi-pbs.SC: CICE run completed successfully

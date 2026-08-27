@@ -1,6 +1,6 @@
 #!/bin/csh -f
 #PBS -N frcg-exp02
-#PBS -P gv90
+#PBS -P jk72
 #PBS -q normalbw
 #PBS -l walltime=10:00:00
 #PBS -l ncpus=1232

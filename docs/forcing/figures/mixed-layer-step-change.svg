@@ -1,8 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="820" viewBox="0 0 1500 820">
   <rect width="1500" height="820" fill="#fbfaf6"/>
   <defs>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#222"/></marker>
-    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#395d6c"/></marker>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#222"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#395d6c"/>
+    </marker>
     <style>
       .title { font-family: Georgia, 'Times New Roman', serif; font-size: 27px; font-weight: 700; fill: #1f1f1f; }
       .head { font-family: Georgia, 'Times New Roman', serif; font-size: 22px; font-weight: 700; fill: #1f1f1f; }
@@ -16,33 +20,91 @@
       .depth { fill: none; stroke: #395d6c; stroke-width: 2.5; marker-end: url(#arrowBlue); }
     </style>
   </defs>
+
   <text x="50" y="48" class="title">A sudden prescribed change in hmix: what CICE/Icepack actually does</text>
+
+  <!-- Panel 1 -->
   <text x="75" y="92" class="head">tₙ: old slab depth H₁</text>
   <path d="M65 134 Q135 126 205 135 T355 133 T510 138" class="rough"/>
   <path d="M70 135 L70 184 Q140 176 205 184 T350 181 T505 186 L505 136" fill="#e8edef" stroke="#222" stroke-width="1.7"/>
   <text x="90" y="169" class="body">sea ice</text>
   <path d="M70 185 Q145 178 215 186 T360 183 T505 187 L505 386 Q430 392 355 386 T205 390 T70 384 Z" fill="#dcebf0" stroke="#222" stroke-width="1.7"/>
-  <text x="92" y="252" class="body">mixed slab</text><text x="92" y="279" class="code">T = Tₙ</text><text x="92" y="306" class="code">C = rho cp H₁</text>
+  <text x="92" y="252" class="body">mixed slab</text>
+  <text x="92" y="279" class="code">T = Tₙ</text>
+  <text x="92" y="306" class="code">C = rho cp H₁</text>
   <path d="M70 386 Q145 379 220 388 T365 383 T505 390 L505 582 Q430 575 355 584 T205 578 T70 585 Z" fill="#eef3f3" stroke="#222" stroke-width="1.7"/>
-  <text x="92" y="454" class="body">ocean below slab</text><text x="92" y="485" class="code">T_b</text>
-  <path d="M335 104 C334 126 333 146 333 175" class="flux"/><text x="350" y="118" class="small">F_atm / F_ice</text>
-  <path d="M335 480 C335 447 335 420 335 394" class="flux"/><text x="350" y="469" class="small">-qdp</text>
-  <path d="M466 190 L466 376" class="depth"/><path d="M466 376 L466 190" class="depth"/><text x="431" y="292" class="code" transform="rotate(-90 431 292)">H₁</text>
-  <text x="90" y="627" class="code">ΔT₁ = F_net Δt / (rho cp H₁)</text><text x="90" y="655" class="small">Within this call, the same H₁ is also used to compute frzmlt.</text>
-  <path d="M555 320 C600 296 638 296 682 320" class="flux"/><text x="568" y="250" class="head">forcing update</text><text x="560" y="280" class="code">H₁ → H₂</text><text x="548" y="355" class="body">CICE replaces/updates</text><text x="554" y="382" class="code">hmix(i,j)</text><text x="548" y="423" class="body">but carries forward</text><text x="568" y="450" class="code">sst = Tₙ</text>
-  <path d="M532 486 Q618 472 712 486 L708 578 Q620 588 534 578 Z" fill="#fff6df" stroke="#222" stroke-width="1.8"/><text x="548" y="514" class="body" font-weight="700">No hidden heat pulse</text><text x="548" y="543" class="small">no entrainment term</text><text x="548" y="566" class="small">no detrainment term</text>
+  <text x="92" y="454" class="body">ocean below slab</text>
+  <text x="92" y="485" class="code">T_b</text>
+
+  <path d="M335 104 C334 126 333 146 333 175" class="flux"/>
+  <text x="350" y="118" class="small">F_atm / F_ice</text>
+  <path d="M335 480 C335 447 335 420 335 394" class="flux"/>
+  <text x="350" y="469" class="small">-qdp</text>
+
+  <path d="M466 190 L466 376" class="depth"/>
+  <path d="M466 376 L466 190" class="depth"/>
+  <text x="431" y="292" class="code" transform="rotate(-90 431 292)">H₁</text>
+
+  <text x="90" y="627" class="code">ΔT₁ = F_net Δt / (rho cp H₁)</text>
+  <text x="90" y="655" class="small">Within this call, the same H₁ is also used to compute frzmlt.</text>
+
+  <!-- Central forcing switch -->
+  <path d="M555 320 C600 296 638 296 682 320" class="flux"/>
+  <text x="568" y="250" class="head">forcing update</text>
+  <text x="560" y="280" class="code">H₁ → H₂</text>
+  <text x="548" y="355" class="body">CICE replaces/updates</text>
+  <text x="554" y="382" class="code">hmix(i,j)</text>
+  <text x="548" y="423" class="body">but carries forward</text>
+  <text x="568" y="450" class="code">sst = Tₙ</text>
+
+  <path d="M532 486 Q618 472 712 486 L708 578 Q620 588 534 578 Z" fill="#fff6df" stroke="#222" stroke-width="1.8"/>
+  <text x="548" y="514" class="body" font-weight="700">No hidden heat pulse</text>
+  <text x="548" y="543" class="small">no entrainment term</text>
+  <text x="548" y="566" class="small">no detrainment term</text>
+
+  <!-- Panel 2 -->
   <text x="745" y="92" class="head">tₙ₊₁: new slab depth H₂</text>
   <path d="M735 134 Q805 126 875 135 T1025 133 T1180 138" class="rough"/>
   <path d="M740 135 L740 184 Q810 176 875 184 T1020 181 T1175 186 L1175 136" fill="#e8edef" stroke="#222" stroke-width="1.7"/>
   <text x="760" y="169" class="body">sea ice</text>
   <path d="M740 185 Q815 178 885 186 T1030 183 T1175 187 L1175 510 Q1100 516 1025 510 T875 514 T740 508 Z" fill="#dcebf0" stroke="#222" stroke-width="1.7"/>
-  <text x="762" y="269" class="body">new represented slab</text><text x="762" y="298" class="code">T enters as Tₙ</text><text x="762" y="327" class="code">C = rho cp H₂</text><text x="762" y="359" class="note">if H₂ &gt; H₁, thermal inertia is larger</text>
-  <path d="M740 510 Q815 503 890 512 T1035 507 T1175 514 L1175 582 Q1100 575 1025 584 T875 578 T740 585 Z" fill="#eef3f3" stroke="#222" stroke-width="1.7"/><text x="762" y="554" class="body">ocean below slab</text>
-  <path d="M1000 104 C999 126 998 146 998 175" class="flux"/><text x="1015" y="118" class="small">next F_atm / F_ice</text><path d="M1000 560 C1000 544 1000 527 1000 516" class="flux"/><text x="1016" y="556" class="small">-qdp</text>
-  <path d="M1138 190 L1138 500" class="depth"/><path d="M1138 500 L1138 190" class="depth"/><text x="1103" y="363" class="code" transform="rotate(-90 1103 363)">H₂</text>
-  <text x="760" y="627" class="code">ΔT₂ = F_net Δt / (rho cp H₂)</text><text x="760" y="655" class="small">The new H controls subsequent temperature response and freeze/melt potential.</text>
+  <text x="762" y="269" class="body">new represented slab</text>
+  <text x="762" y="298" class="code">T enters as Tₙ</text>
+  <text x="762" y="327" class="code">C = rho cp H₂</text>
+  <text x="762" y="359" class="note">if H₂ &gt; H₁, thermal inertia is larger</text>
+  <path d="M740 510 Q815 503 890 512 T1035 507 T1175 514 L1175 582 Q1100 575 1025 584 T875 578 T740 585 Z" fill="#eef3f3" stroke="#222" stroke-width="1.7"/>
+  <text x="762" y="554" class="body">ocean below slab</text>
+
+  <path d="M1000 104 C999 126 998 146 998 175" class="flux"/>
+  <text x="1015" y="118" class="small">next F_atm / F_ice</text>
+  <path d="M1000 560 C1000 544 1000 527 1000 516" class="flux"/>
+  <text x="1016" y="556" class="small">-qdp</text>
+
+  <path d="M1138 190 L1138 500" class="depth"/>
+  <path d="M1138 500 L1138 190" class="depth"/>
+  <text x="1103" y="363" class="code" transform="rotate(-90 1103 363)">H₂</text>
+
+  <text x="760" y="627" class="code">ΔT₂ = F_net Δt / (rho cp H₂)</text>
+  <text x="760" y="655" class="small">The new H controls subsequent temperature response and freeze/melt potential.</text>
+
+  <!-- physical missing term -->
   <path d="M1204 156 Q1335 145 1470 160 L1462 557 Q1335 573 1200 555 Z" fill="#fff" stroke="#222" stroke-width="1.8"/>
-  <text x="1220" y="192" class="head">What a variable-depth</text><text x="1220" y="218" class="head">physical slab would add</text><text x="1220" y="263" class="body">For deepening:</text><text x="1220" y="298" class="code">H dT/dt = F/(rho cp)</text><text x="1236" y="327" class="code">+ (T_b - T) dH/dt</text><text x="1220" y="371" class="body">Icepack's slab omits the</text><text x="1220" y="399" class="body">second term.</text>
-  <path d="M1222 430 C1280 422 1335 438 1390 429 S1440 433 1453 427" class="dash"/><text x="1220" y="466" class="small">Therefore changing H is a</text><text x="1220" y="489" class="small">variable heat-capacity forcing</text><text x="1220" y="512" class="small">experiment, not a prognostic</text><text x="1220" y="535" class="small">entraining mixed layer.</text>
-  <path d="M72 712 Q340 697 615 711 T1165 710 T1434 714" class="dash"/><text x="84" y="750" class="body">At the instant H changes while T is carried forward, the represented heat anomaly changes by</text><text x="83" y="783" class="code">ΔE'_geom = rho cp (T - Tf) (H₂ - H₁)</text><text x="632" y="783" class="body">— this is not balanced by an explicit flux in the present Icepack slab.</text>
+  <text x="1220" y="192" class="head">What a variable-depth</text>
+  <text x="1220" y="218" class="head">physical slab would add</text>
+  <text x="1220" y="263" class="body">For deepening:</text>
+  <text x="1220" y="298" class="code">H dT/dt = F/(rho cp)</text>
+  <text x="1236" y="327" class="code">+ (T_b - T) dH/dt</text>
+  <text x="1220" y="371" class="body">Icepack's slab omits the</text>
+  <text x="1220" y="399" class="body">second term.</text>
+  <path d="M1222 430 C1280 422 1335 438 1390 429 S1440 433 1453 427" class="dash"/>
+  <text x="1220" y="466" class="small">Therefore changing H is a</text>
+  <text x="1220" y="489" class="small">variable heat-capacity forcing</text>
+  <text x="1220" y="512" class="small">experiment, not a prognostic</text>
+  <text x="1220" y="535" class="small">entraining mixed layer.</text>
+
+  <!-- energy statement -->
+  <path d="M72 712 Q340 697 615 711 T1165 710 T1434 714" class="dash"/>
+  <text x="84" y="750" class="body">At the instant H changes while T is carried forward, the represented heat anomaly changes by</text>
+  <text x="83" y="783" class="code">ΔE'_geom = rho cp (T - Tf) (H₂ - H₁)</text>
+  <text x="632" y="783" class="body">— this is not balanced by an explicit flux in the present Icepack slab.</text>
 </svg>
