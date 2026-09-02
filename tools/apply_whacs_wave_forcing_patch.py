@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Patch ice_forcing.F90 for hourly monthly WHACS/CICE25 wave forcing.
 
-This script is intentionally narrow.  It edits only the existing wave-forcing
+The patch is deliberately narrow: it edits only the existing wave-forcing
 hooks in cicecore/cicedyn/general/ice_forcing.F90 and leaves the ERA5, AFIM,
 lateral-drag and harmonic-tide pathways untouched.
 
@@ -9,20 +9,23 @@ Reference implementation:
   Noah Day, CICE wave-forcing branch
   cicecore/cicedyn/general/ice_forcing.F90
 
-Adaptations for the Antarctic standalone workflow:
+Adaptations for this standalone Antarctic workflow:
   * monthly hourly files rather than one 6-hourly annual file;
   * true current-hour/next-hour interpolation;
   * forcing-cycle wrap at month/year boundaries;
   * dedicated wave record cache (does not reuse atmospheric oldrecnum);
-  * explicit ocean-mask guard during wave propagation;
-  * static-file behaviour retained unless wave_spec_file='WHACS_MONTHLY'.
+  * explicit tmask guard during wave propagation;
+  * static record-1 behaviour retained for ordinary wave_spec_file paths;
+  * monthly mode selected by a YYYYMM token in wave_spec_file.
+
+Example forcing_nml value:
+  wave_spec_file = '/g/data/gv90/da1339/afim_input/CAWCR/CAWCR_efreq_for_CICE6_YYYYMM.nc'
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-
 
 TARGET = Path("cicecore/cicedyn/general/ice_forcing.F90")
 
@@ -37,7 +40,6 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 def main() -> None:
     text = TARGET.read_text()
 
-    # nfreq is required by the persistent two-slot wave forcing buffer.
     text = replace_once(
         text,
         "use ice_domain_size  , only: ncat, max_blocks, nx_global, ny_global",
@@ -45,8 +47,6 @@ def main() -> None:
         "ice_domain_size import",
     )
 
-    # Keep a wave-specific cache.  Do not share oldrecnum with atmospheric or
-    # ocean forcing because those pathways update it independently.
     text = replace_once(
         text,
         "  ! 4-d (categorical) field values at 2 temporal data points\n"
@@ -77,15 +77,14 @@ def main() -> None:
 
     new_wave_block = r'''  !=======================================================================
   subroutine get_wave_spec
-    ! Populate the Icepack/CICE frequency spectrum and, for spatially varying
-    ! forcing, propagate waves from open water into the ice cover.
+    ! Populate the Icepack/CICE wave spectrum.  For a wave_spec_file
+    ! containing the token YYYYMM, read the shuga hourly monthly WHACS files;
+    ! otherwise preserve the historical static record-1 behaviour.
     !
-    ! The propagation/attenuation pathway follows Noah Day's standalone CICE
-    ! wave-forcing implementation.  The WHACS reader is adapted to the hourly
-    ! monthly files produced by shuga.
+    ! Wave propagation and attenuation follow Noah Day's standalone CICE
+    ! wave-forcing implementation, with an explicit ocean-mask guard.
     use ice_read_write, only: ice_read_nc_xyf
     use ice_arrays_column, only: wave_spectrum, dwavefreq, wavefreq
-    use ice_constants, only: c0
     use ice_timers, only: ice_timer_start, ice_timer_stop, timer_fsd
 
     integer (kind=int_kind) :: fid
@@ -94,8 +93,6 @@ def main() -> None:
     logical (kind=log_kind) :: wave_spec
     logical (kind=log_kind), parameter :: wave_propagation = .true.
     character(len=*), parameter :: subname = '(get_wave_spec)'
-
-    if (local_debug .and. my_task == master_task) write(nu_diag,*) subname,'fdbg start'
 
     call ice_timer_start(timer_fsd)
 
@@ -106,7 +103,6 @@ def main() -> None:
          file=__FILE__, line=__LINE__)
 
     wave_spectrum(:,:,:,:) = c0
-    debug_forcing = .false.
 
     if (wave_spec) then
        call icepack_init_wave(nfreq, wave_spectrum_profile, wavefreq, dwavefreq)
@@ -114,35 +110,32 @@ def main() -> None:
        if ((trim(wave_spec_type) == 'constant') .or. &
            (trim(wave_spec_type) == 'random')) then
 
-          if (trim(wave_spec_file) == 'WHACS_MONTHLY') then
+          if (index(trim(wave_spec_file),'YYYYMM') > 0) then
 #ifdef USE_NETCDF
              call wave_spec_data_hourly
 #else
-             call abort_ice(subname//' ERROR WHACS_MONTHLY requires USE_NETCDF', &
+             call abort_ice(subname//' ERROR monthly WHACS forcing requires USE_NETCDF', &
                   file=__FILE__, line=__LINE__)
 #endif
           else
              ! Backwards-compatible static-file pathway used by earlier tests.
-             if (trim(wave_spec_file(1:4)) == 'unkn') then
+             if (len_trim(wave_spec_file) == 0 .or. &
+                  trim(wave_spec_file(1:min(4,len_trim(wave_spec_file)))) == 'unkn') then
                 call abort_ice(subname//' ERROR wave_spec_file '//trim(wave_spec_file), &
                      file=__FILE__, line=__LINE__)
-             else
-#ifdef USE_NETCDF
-                call ice_open_nc(trim(wave_spec_file),fid)
-                call ice_read_nc_xyf(fid, 1, 'efreq', wave_spectrum(:,:,:,:), &
-                     debug_forcing, field_loc_center, field_type_scalar)
-                call ice_close_nc(fid)
-#else
-                call abort_ice(subname//' ERROR static wave spectrum requires USE_NETCDF', &
-                     file=__FILE__, line=__LINE__)
-#endif
              endif
+#ifdef USE_NETCDF
+             call ice_open_nc(trim(wave_spec_file),fid)
+             call ice_read_nc_xyf(fid, 1, 'efreq', wave_spectrum(:,:,:,:), &
+                  debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
+             call ice_close_nc(fid)
+#else
+             call abort_ice(subname//' ERROR static wave spectrum requires USE_NETCDF', &
+                  file=__FILE__, line=__LINE__)
+#endif
           endif
        endif
 
-       ! Noah Day wave propagation scheme.  The external WHACS field is first
-       ! retained in open water; ice-covered cells are then repopulated by
-       ! attenuation from neighbouring wave-bearing cells.
        if (wave_propagation) call propagate_waves
     endif
 
@@ -151,18 +144,18 @@ def main() -> None:
 
   !=======================================================================
   subroutine wave_spec_data_hourly
-    ! Read the shuga monthly WHACS/CICE25 forcing and linearly interpolate
-    ! between the current and following hourly records.
+    ! Read hourly shuga WHACS/CICE25 forcing and linearly interpolate between
+    ! the current and following hourly records.
     !
-    ! Expected file naming:
-    !   <wave_spec_dir>/CAWCR_efreq_for_CICE6_YYYYMM.nc
+    ! wave_spec_file is a template, for example:
+    !   /g/data/gv90/da1339/afim_input/CAWCR/
+    !   CAWCR_efreq_for_CICE6_YYYYMM.nc
     !
     ! Expected variable:
     !   efreq(time,nfreq,nj,ni)
     !
-    ! The files are already on the active CICE T grid and already use the
-    ! exact 25-bin Icepack frequency grid, so no runtime spatial or spectral
-    ! remapping is performed here.
+    ! Files are already on the active CICE T grid and exact CICE25 frequency
+    ! grid, so no runtime horizontal or spectral remapping occurs here.
     use ice_read_write, only: ice_read_nc_xyf
     use ice_arrays_column, only: wave_spectrum
 
@@ -182,7 +175,7 @@ def main() -> None:
     sec1hr = secday / 24.0_dbl_kind
 
     ! Resolve model year onto the configured forcing cycle independently of
-    ! atmospheric/ocean cache state.
+    ! atmospheric/ocean forcing record caches.
     if (ycycle == 0) then
        curr_year = myear
     else
@@ -194,7 +187,7 @@ def main() -> None:
     maxrec = 24 * daymo(curr_month)
     hour_index = int(real(msec,kind=dbl_kind) / sec1hr)
     recnum = 24 * (mday - 1) + hour_index + 1
-    recnum = max(1_int_kind, min(maxrec, recnum))
+    recnum = max(1, min(maxrec, recnum))
 
     frac = (real(msec,kind=dbl_kind) - real(hour_index,kind=dbl_kind)*sec1hr) / sec1hr
     frac = max(c0, min(c1, frac))
@@ -217,8 +210,8 @@ def main() -> None:
 
     new_month = (wave_cache_year /= curr_year .or. wave_cache_month /= curr_month)
 
-    ! Read only when the model enters a new forcing hour.  The two slots are
-    ! then reused by all sub-hourly CICE timesteps in that hour.
+    ! Read only upon entering a new forcing hour.  Both slots are then reused
+    ! by every sub-hourly CICE timestep within that hour.
     if (istep == 1 .or. wave_cache_year /= curr_year .or. &
          wave_cache_month /= curr_month .or. wave_cache_recnum /= recnum) then
 
@@ -227,6 +220,7 @@ def main() -> None:
        call ice_open_nc(trim(curr_file),fid)
        call ice_read_nc_xyf(fid, recnum, 'efreq', wave_spectrum_data(:,:,:,1,:), &
             debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
+
        if (trim(next_file) == trim(curr_file)) then
           call ice_read_nc_xyf(fid, next_recnum, 'efreq', wave_spectrum_data(:,:,:,2,:), &
                debug_forcing, field_loc=field_loc_center, field_type=field_type_scalar)
@@ -240,9 +234,9 @@ def main() -> None:
        endif
 
        if (new_month .and. my_task == master_task) then
-          write(nu_diag,*) subname//' WHACS monthly forcing: ', trim(curr_file)
-          write(nu_diag,*) subname//' next forcing file    : ', trim(next_file)
-          write(nu_diag,*) subname//' nfreq                : ', nfreq
+          write(nu_diag,*) subname//' current WHACS file = ', trim(curr_file)
+          write(nu_diag,*) subname//' next WHACS file    = ', trim(next_file)
+          write(nu_diag,*) subname//' nfreq              = ', nfreq
        endif
 
        wave_cache_year   = curr_year
@@ -258,25 +252,41 @@ def main() -> None:
 
   !=======================================================================
   subroutine whacs_monthly_wave_file(year, month, filename)
+    ! Replace the first YYYYMM token in wave_spec_file with the forcing date.
     integer (kind=int_kind), intent(in) :: year, month
     character(char_len_long), intent(out) :: filename
+    integer (kind=int_kind) :: ipos, nlen
+    character(len=6) :: yyyymm
     character(len=*), parameter :: subname = '(whacs_monthly_wave_file)'
 
-    if (len_trim(wave_spec_dir) == 0 .or. trim(wave_spec_dir(1:4)) == 'unkn') then
-       call abort_ice(subname//' ERROR wave_spec_dir must point to monthly WHACS forcing', &
-            file=__FILE__, line=__LINE__)
+    nlen = len_trim(wave_spec_file)
+    ipos = index(trim(wave_spec_file),'YYYYMM')
+    if (ipos <= 0) then
+       call abort_ice(subname//' ERROR wave_spec_file lacks YYYYMM token: '// &
+            trim(wave_spec_file), file=__FILE__, line=__LINE__)
     endif
 
-    write(filename,'(a,"/CAWCR_efreq_for_CICE6_",i4.4,i2.2,".nc")') &
-         trim(wave_spec_dir), year, month
+    write(yyyymm,'(i4.4,i2.2)') year, month
+    filename = ' '
+
+    if (ipos == 1 .and. ipos+5 == nlen) then
+       filename = yyyymm
+    elseif (ipos == 1) then
+       filename = yyyymm//trim(wave_spec_file(ipos+6:nlen))
+    elseif (ipos+5 == nlen) then
+       filename = wave_spec_file(1:ipos-1)//yyyymm
+    else
+       filename = wave_spec_file(1:ipos-1)//yyyymm// &
+            trim(wave_spec_file(ipos+6:nlen))
+    endif
   end subroutine whacs_monthly_wave_file
 
   !=======================================================================
   subroutine propagate_waves
-    ! Propagate open-water wave spectra across the ice cover using the
-    ! Meylan, Bennetts & Kohout (2014) empirical attenuation relation.
-    ! Structure follows Noah Day's 2025 standalone CICE implementation.
-    use ice_grid, only: HTE, HTN, tlat, tmask
+    ! Propagate open-water wave spectra into modeled ice using the empirical
+    ! attenuation relation of Meylan, Bennetts & Kohout (2014).  The 10-pass
+    ! neighbour structure follows Noah Day's 2025 standalone implementation.
+    use ice_grid, only: tlat, tmask
     use ice_domain, only: nblocks, blocks_ice
     use ice_blocks, only: block, get_block
     use ice_arrays_column, only: wave_spectrum, dwavefreq, wavefreq
@@ -293,7 +303,6 @@ def main() -> None:
     integer, dimension(4) :: di = [0, 0, -1, 1]
     integer, dimension(4) :: dj = [1, -1, 0, 0]
     integer, dimension(4) :: dir_code_list = [1, 3, 4, 2]
-    character(len=*), parameter :: subname = '(propagate_waves)'
 
     conc_obs = 0.70_dbl_kind
     do idx_freq = 1, nfreq
@@ -302,9 +311,8 @@ def main() -> None:
 
     max_passes = 10
 
-    ! WHACS is an external open-ocean boundary/source field.  Remove its
-    ! direct energy from ice-covered cells before propagating attenuated waves
-    ! inward.  Also keep land wave-free explicitly.
+    ! Treat WHACS as an open-water source field.  Remove direct external wave
+    ! energy under modeled ice before propagating attenuated spectra inward.
     do iblk = 1, nblocks
        this_block = get_block(blocks_ice(iblk),iblk)
        ilo = this_block%ilo
@@ -313,9 +321,8 @@ def main() -> None:
        jhi = this_block%jhi
        do j = jlo, jhi
           do i = ilo, ihi
-             if (.not. tmask(i,j,iblk) .or. aice(i,j,iblk) >= 0.15_dbl_kind) then
-                wave_spectrum(i,j,:,iblk) = c0
-             endif
+             if (.not. tmask(i,j,iblk) .or. aice(i,j,iblk) >= 0.15_dbl_kind) &
+                  wave_spectrum(i,j,:,iblk) = c0
           enddo
        enddo
     enddo
@@ -334,9 +341,6 @@ def main() -> None:
              do i = ilo, ihi
                 local_sig_ht = c4 * sqrt(sum(wave_spectrum(i,j,:,iblk)*dwavefreq(:)))
 
-                ! Only fill ice-covered ocean cells that do not already carry
-                ! a meaningful propagated spectrum.  This is the explicit
-                ! tmask guard added to Noah's propagation structure.
                 if (tmask(i,j,iblk) .and. aice(i,j,iblk) >= 0.15_dbl_kind .and. &
                      local_sig_ht <= p1) then
 
@@ -438,6 +442,7 @@ def main() -> None:
 
     TARGET.write_text(text)
     print(f"patched {TARGET}")
+    print("monthly mode: wave_spec_file must contain YYYYMM")
     print("next: git diff --check && git diff -- cicecore/cicedyn/general/ice_forcing.F90")
 
 
