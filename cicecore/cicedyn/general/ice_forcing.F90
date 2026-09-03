@@ -24,7 +24,8 @@ module ice_forcing
   use ice_boundary     , only: ice_HaloUpdate
   use ice_blocks       , only: nx_block, ny_block
   use ice_domain       , only: halo_info
-  use ice_domain_size  , only: ncat, max_blocks, nx_global, ny_global
+  ! use ice_domain_size  , only: ncat, max_blocks, nx_global, ny_global
+  use ice_domain_size  , only: ncat, max_blocks, nx_global, ny_global, nfreq
   use ice_communicate  , only: my_task, master_task
   use ice_calendar     , only: istep, istep1, msec, mday, mmonth, myear, yday, daycal, daymo, days_per_year, compute_days_between
   use ice_fileunits    , only: nu_diag, nu_forcing
@@ -170,6 +171,26 @@ module ice_forcing
        vatm100_data
   ! 4-d (categorical) field values at 2 temporal data points
   real (kind=dbl_kind), dimension(:,:,:,:,:), allocatable, public :: topmelt_data, botmelt_data
+  !-----------------------------------------------------------------------
+  ! WAVE FORCING
+  !
+  ! Hourly WHACS spectral forcing at two temporal records for interpolation.
+  !
+  ! Layout:
+  !   wave_spectrum_data(i,j,frequency,time_slot,block)
+  !
+  ! A dedicated record cache is used rather than oldrecnum because the
+  ! atmospheric and ocean forcing pathways update oldrecnum independently.
+  !-----------------------------------------------------------------------
+  real (kind=dbl_kind), dimension(:,:,:,:,:), allocatable :: &
+       wave_spectrum_data
+  integer (kind=int_kind) :: &
+       wave_cache_year        = -9999, &
+       wave_cache_month       = -9999, &
+       wave_cache_recnum      = -9999, &
+       wave_cache_next_year   = -9999, &
+       wave_cache_next_month  = -9999, &
+       wave_cache_next_recnum = -9999
   ! data formats and types
   character(char_len), public :: &
        atm_data_format,  & ! 'bin'=binary or 'nc'=netcdf
@@ -299,6 +320,7 @@ contains
          ocn_frc_w   (nx_block,ny_block,max_blocks,nfld,wk_per_yr), &
          topmelt_file(ncat), &
          botmelt_file(ncat), &
+         wave_spectrum_data(nx_block,ny_block,nfreq,2,max_blocks), &
          stat=ierr)
     if (ierr/=0) call abort_ice('(alloc_forcing): Out of Memory')
     ! initialize this, not set in box2001 (and some other forcings?)
@@ -310,6 +332,7 @@ contains
     windgust_data = c0
     uatm100_data  = c0
     vatm100_data  = c0
+    wave_spectrum_data = c0
   end subroutine alloc_forcing
 
   !=======================================================================
@@ -5775,73 +5798,1346 @@ contains
  end subroutine uniform_data_ocn
 
  !=======================================================================
- subroutine get_wave_spec
+!  subroutine get_wave_spec
    
-   use ice_read_write, only: ice_read_nc_xyf
-   use ice_arrays_column, only: wave_spectrum, &
-        dwavefreq, wavefreq
-   use ice_constants, only: c0
-   use ice_domain_size, only: nfreq
-   use ice_timers, only: ice_timer_start, ice_timer_stop, timer_fsd
+!    use ice_read_write, only: ice_read_nc_xyf
+!    use ice_arrays_column, only: wave_spectrum, &
+!         dwavefreq, wavefreq
+!    use ice_constants, only: c0
+!    use ice_domain_size, only: nfreq
+!    use ice_timers, only: ice_timer_start, ice_timer_stop, timer_fsd
 
-   ! local variables
+!    ! local variables
+!    integer (kind=int_kind) :: &
+!         fid                    ! file id for netCDF routines
+
+!    real(kind=dbl_kind), dimension(nfreq) :: &
+!         wave_spectrum_profile  ! wave spectrum
+
+!    character(char_len) :: wave_spec_type
+!    logical (kind=log_kind) :: wave_spec
+!    character(len=*), parameter :: subname = '(get_wave_spec)'
+
+!    if (local_debug .and. my_task == master_task) write(nu_diag,*) subname,'fdbg start'
+
+!    call ice_timer_start(timer_fsd)
+
+!    call icepack_query_parameters(wave_spec_out=wave_spec, &
+!         wave_spec_type_out=wave_spec_type)
+!    call icepack_warnings_flush(nu_diag)
+!    if (icepack_warnings_aborted()) call abort_ice(error_message=subname, &
+!         file=__FILE__, line=__LINE__)
+
+!    ! if no wave data is provided, wave_spectrum is zero everywhere
+!    wave_spectrum(:,:,:,:) = c0
+!    wave_spec_dir = ocn_data_dir
+!    debug_forcing = .false.
+
+!    ! wave spectrum and frequencies
+!    if (wave_spec) then
+!       ! get hardwired frequency bin info and a dummy wave spectrum profile
+!       ! the latter is used if wave_spec_type == profile
+!       call icepack_init_wave(nfreq,                 &
+!            wave_spectrum_profile, &
+!            wavefreq, dwavefreq)
+
+!       ! read more realistic data from a file
+!       if ((trim(wave_spec_type) == 'constant').OR.(trim(wave_spec_type) == 'random')) then
+!          if (trim(wave_spec_file(1:4)) == 'unkn') then
+!             call abort_ice (subname//'ERROR: wave_spec_file '//trim(wave_spec_file), &
+!                  file=__FILE__, line=__LINE__)
+!          else
+! #ifdef USE_NETCDF
+!             call ice_open_nc(wave_spec_file,fid)
+!             call ice_read_nc_xyf (fid, 1, 'efreq', wave_spectrum(:,:,:,:), debug_forcing, &
+!                  field_loc_center, field_type_scalar)
+!             call ice_close_nc(fid)
+! #else
+!             write (nu_diag,*) "wave spectrum file not available, requires cpp USE_NETCDF"
+!             write (nu_diag,*) "wave spectrum file not available, using default profile"
+!             call abort_ice (subname//'ERROR: wave_spec_file '//trim(wave_spec_file), &
+!                  file=__FILE__, line=__LINE__)
+! #endif
+!          endif
+!       endif
+!    endif
+
+!    call ice_timer_stop(timer_fsd)
+
+!  end subroutine get_wave_spec
+ !=======================================================================
+ real(kind=dbl_kind) function wave_walltime()
+   !
+   ! Lightweight wall-clock timer for wave forcing diagnostics.
+   !
+   ! Values are only used as differences on the same MPI rank, so clocks
+   ! do not need to be synchronised between ranks.
+   !
+   integer :: &
+        count, &
+        count_rate
+
+   call system_clock(count,count_rate)
+
+   if (count_rate > 0) then
+      wave_walltime = real(count,kind=dbl_kind) / &
+                      real(count_rate,kind=dbl_kind)
+   else
+      wave_walltime = c0
+   endif
+
+ end function wave_walltime
+
+ !=======================================================================
+ subroutine get_wave_spec
+   !
+   ! Populate the CICE/Icepack wave-frequency spectrum.
+   !
+   ! For WHACS forcing, wave_spec_file is a monthly filename template:
+   !
+   !   .../CAWCR_efreq_for_CICE6_YYYYMM.nc
+   !
+   ! The monthly files contain hourly efreq on the CICE T grid and use the
+   ! exact CICE25 frequency discretisation.  Adjacent hourly spectra are
+   ! linearly interpolated to the CICE model time and the resulting spectrum
+   ! is then propagated through the current modeled ice cover using the
+   ! Noah Day / MBK14 treatment.
+   !
+   use ice_read_write, only: ice_read_nc_xyf
+   use ice_arrays_column, only: &
+        wave_spectrum, &
+        dwavefreq, &
+        wavefreq
+   use ice_constants, only: c0
+   use ice_timers, only: &
+        ice_timer_start, &
+        ice_timer_stop, &
+        timer_fsd
+
    integer (kind=int_kind) :: &
-        fid                    ! file id for netCDF routines
+        fid
 
    real(kind=dbl_kind), dimension(nfreq) :: &
-        wave_spectrum_profile  ! wave spectrum
+        wave_spectrum_profile
 
-   character(char_len) :: wave_spec_type
-   logical (kind=log_kind) :: wave_spec
-   character(len=*), parameter :: subname = '(get_wave_spec)'
+   real(kind=dbl_kind) :: &
+        t_total_0, &
+        t_total_1, &
+        t_reader_0, &
+        t_reader_1, &
+        t_prop_0, &
+        t_prop_1
 
-   if (local_debug .and. my_task == master_task) write(nu_diag,*) subname,'fdbg start'
+   character(char_len) :: &
+        wave_spec_type
+
+   logical (kind=log_kind) :: &
+        wave_spec, &
+        apply_wave_propagation
+
+   logical (kind=log_kind), parameter :: &
+        wave_perf_debug = .true.
+
+   character(len=*), parameter :: &
+        subname = '(get_wave_spec)'
+
+   t_total_0 = wave_walltime()
+
+   if (local_debug .and. my_task == master_task) then
+      write(nu_diag,*) subname,' fdbg start'
+   endif
 
    call ice_timer_start(timer_fsd)
 
-   call icepack_query_parameters(wave_spec_out=wave_spec, &
-        wave_spec_type_out=wave_spec_type)
-   call icepack_warnings_flush(nu_diag)
-   if (icepack_warnings_aborted()) call abort_ice(error_message=subname, &
-        file=__FILE__, line=__LINE__)
+   call icepack_query_parameters( &
+        wave_spec_out      = wave_spec, &
+        wave_spec_type_out = wave_spec_type)
 
-   ! if no wave data is provided, wave_spectrum is zero everywhere
+   call icepack_warnings_flush(nu_diag)
+
+   if (icepack_warnings_aborted()) then
+      call abort_ice( &
+           error_message=subname, &
+           file=__FILE__, line=__LINE__)
+   endif
+
+   ! If no wave data are provided, wave_spectrum remains zero everywhere.
    wave_spectrum(:,:,:,:) = c0
-   wave_spec_dir = ocn_data_dir
    debug_forcing = .false.
 
-   ! wave spectrum and frequencies
-   if (wave_spec) then
-      ! get hardwired frequency bin info and a dummy wave spectrum profile
-      ! the latter is used if wave_spec_type == profile
-      call icepack_init_wave(nfreq,                 &
-           wave_spectrum_profile, &
-           wavefreq, dwavefreq)
+   apply_wave_propagation = .false.
 
-      ! read more realistic data from a file
-      if ((trim(wave_spec_type) == 'constant').OR.(trim(wave_spec_type) == 'random')) then
-         if (trim(wave_spec_file(1:4)) == 'unkn') then
-            call abort_ice (subname//'ERROR: wave_spec_file '//trim(wave_spec_file), &
+   t_reader_0 = c0
+   t_reader_1 = c0
+   t_prop_0   = c0
+   t_prop_1   = c0
+
+   if (wave_spec) then
+
+      ! Obtain the Icepack/CICE wave-frequency grid.
+      call icepack_init_wave( &
+           nfreq, &
+           wave_spectrum_profile, &
+           wavefreq, &
+           dwavefreq)
+
+      ! Existing CICE semantics use constant/random to activate an externally
+      ! supplied spectrum.
+      if ((trim(wave_spec_type) == 'constant') .or. &
+          (trim(wave_spec_type) == 'random')) then
+
+         if (len_trim(wave_spec_file) == 0) then
+
+            call abort_ice( &
+                 subname//' ERROR: wave_spec_file is empty', &
                  file=__FILE__, line=__LINE__)
-         else
+
+         elseif (index(trim(wave_spec_file),'YYYYMM') > 0) then
+
 #ifdef USE_NETCDF
-            call ice_open_nc(wave_spec_file,fid)
-            call ice_read_nc_xyf (fid, 1, 'efreq', wave_spectrum(:,:,:,:), debug_forcing, &
-                 field_loc_center, field_type_scalar)
-            call ice_close_nc(fid)
+            t_reader_0 = wave_walltime()
+
+            call wave_spec_data_hourly
+
+            t_reader_1 = wave_walltime()
+
+            apply_wave_propagation = .true.
 #else
-            write (nu_diag,*) "wave spectrum file not available, requires cpp USE_NETCDF"
-            write (nu_diag,*) "wave spectrum file not available, using default profile"
-            call abort_ice (subname//'ERROR: wave_spec_file '//trim(wave_spec_file), &
+            call abort_ice( &
+                 subname//' ERROR: monthly WHACS forcing requires USE_NETCDF', &
                  file=__FILE__, line=__LINE__)
 #endif
+
+         elseif (trim(wave_spec_file(1:min(4,len_trim(wave_spec_file)))) == 'unkn') then
+
+            call abort_ice( &
+                 subname//' ERROR: wave_spec_file '//trim(wave_spec_file), &
+                 file=__FILE__, line=__LINE__)
+
+         else
+
+            ! Retain original static-file behaviour for older wave tests.
+#ifdef USE_NETCDF
+            t_reader_0 = wave_walltime()
+
+            call ice_open_nc(trim(wave_spec_file),fid)
+
+            call ice_read_nc_xyf( &
+                 fid, 1, 'efreq', &
+                 wave_spectrum(:,:,:,:), &
+                 debug_forcing, &
+                 field_loc_center, &
+                 field_type_scalar)
+
+            call ice_close_nc(fid)
+
+            t_reader_1 = wave_walltime()
+#else
+            call abort_ice( &
+                 subname//' ERROR: wave spectrum file requires USE_NETCDF', &
+                 file=__FILE__, line=__LINE__)
+#endif
+
          endif
+
       endif
-   endif
+
+      ! Propagate the time-interpolated WHACS spectrum through the CURRENT
+      ! modeled ice state.  This is intentionally the simpler baseline
+      ! implementation used before propagated-endpoint caching.
+      if (apply_wave_propagation) then
+
+         t_prop_0 = wave_walltime()
+
+         call propagate_waves(wave_spectrum)
+
+         t_prop_1 = wave_walltime()
+
+      endif
+
+   endif ! wave_spec
 
    call ice_timer_stop(timer_fsd)
 
+   t_total_1 = wave_walltime()
+
+   if (wave_perf_debug .and. my_task == master_task) then
+
+      write(nu_diag,*) &
+           'WAVEPERF GET istep=',istep, &
+           ' date=',myear,mmonth,mday, &
+           ' sec=',msec, &
+           ' reader_s=',max(c0,t_reader_1-t_reader_0), &
+           ' propagate_s=',max(c0,t_prop_1-t_prop_0), &
+           ' total_s=',max(c0,t_total_1-t_total_0)
+
+      call flush(nu_diag)
+
+   endif
+
  end subroutine get_wave_spec
+
+ !=======================================================================
+ subroutine wave_spec_data_hourly
+   !
+   ! Read and cache one complete month of hourly WHACS/CAWCR wave spectra.
+   !
+   ! At the first call for each forcing month, all hourly efreq records are
+   ! read from the monthly NetCDF file and scattered to the local CICE
+   ! decomposition.  The local blocks are retained in memory for the
+   ! remainder of the month.
+   !
+   ! No WHACS NetCDF I/O is therefore required during normal model
+   ! timestepping within the month.
+   !
+   ! The cache contains:
+   !
+   !     1 ... nhours       : current month's hourly records
+   !     nhours + 1         : 00:00 record of following month
+   !
+   ! This permits continuous interpolation across the final hour of each
+   ! month without requiring an additional read during timestepping.
+   !
+   ! The original WHACS efreq data are float32.  The monthly cache is
+   ! therefore stored using real_kind to avoid doubling memory without
+   ! adding useful precision.  Conversion to dbl_kind occurs when filling
+   ! wave_spectrum.
+   !
+   ! Expected source variable:
+   !
+   !     efreq(time,nfreq,nj,ni)
+   !
+   ! Through the Fortran NetCDF interface ice_read_nc_xyf sees:
+   !
+   !     efreq(ni,nj,nfreq,time)
+   !
+   ! so no runtime transpose, spatial interpolation, or spectral remapping
+   ! is required.
+   !
+   use ice_read_write, only: &
+        ice_read_nc_xyf
+
+   use ice_arrays_column, only: &
+        wave_spectrum
+
+   use ice_domain, only: &
+        nblocks
+
+   integer (kind=int_kind) :: &
+        fid, &
+        curr_year, curr_month, &
+        next_year, next_month, &
+        recnum, &
+        nhours, &
+        hour_index, &
+        modadj, &
+        irec, &
+        iblk
+
+   real (kind=dbl_kind) :: &
+        secday, &
+        sec1hr, &
+        frac
+
+   real (kind=dbl_kind) :: &
+        t_total_0, &
+        t_total_1, &
+        t_load_0, &
+        t_load_1, &
+        t_read_0, &
+        t_read_1, &
+        t_interp_0, &
+        t_interp_1
+
+   character(char_len_long) :: &
+        curr_file, &
+        next_file
+
+   logical (kind=log_kind) :: &
+        load_month
+
+   !
+   ! Monthly distributed WHACS cache.
+   !
+   ! Dimensions:
+   !
+   !   i, j, frequency, hourly_record, local_block
+   !
+   ! SAVE allows the cache to persist between calls without requiring
+   ! additional module-level state.
+   !
+   real (kind=real_kind), dimension(:,:,:,:,:), &
+        allocatable, save :: &
+        wave_month_cache
+
+   !
+   ! ice_read_nc_xyf requires max_blocks in its distributed output array.
+   ! This small temporary is used only while reading/scattering each record.
+   !
+   real (kind=dbl_kind), dimension(:,:,:,:), &
+        allocatable, save :: &
+        wave_read_buffer
+
+   integer (kind=int_kind), save :: &
+        cache_year   = -9999, &
+        cache_month  = -9999, &
+        cache_nhours = 0
+
+   logical (kind=log_kind), parameter :: &
+        wave_io_debug = .true.
+
+   character(len=*), parameter :: &
+        subname = '(wave_spec_data_hourly)'
+
+   !--------------------------------------------------------------------
+   ! Overall timing.
+   !--------------------------------------------------------------------
+   t_total_0 = wave_walltime()
+
+   t_load_0   = c0
+   t_load_1   = c0
+   t_read_0   = c0
+   t_read_1   = c0
+   t_interp_0 = c0
+   t_interp_1 = c0
+
+   !--------------------------------------------------------------------
+   ! Obtain CICE day length.
+   !--------------------------------------------------------------------
+   call icepack_query_parameters(secday_out=secday)
+
+   call icepack_warnings_flush(nu_diag)
+
+   if (icepack_warnings_aborted()) then
+      call abort_ice( &
+           error_message=subname, &
+           file=__FILE__, line=__LINE__)
+   endif
+
+   sec1hr = secday / 24.0_dbl_kind
+
+   !--------------------------------------------------------------------
+   ! Resolve model year onto configured forcing cycle.
+   !--------------------------------------------------------------------
+   if (ycycle == 0) then
+
+      curr_year = myear
+
+   else
+
+      modadj = abs((min(0,myear-fyear_init)/ycycle+1)*ycycle)
+
+      curr_year = fyear_init + &
+           mod(myear-fyear_init+modadj,ycycle)
+
+   endif
+
+   curr_month = mmonth
+
+   !--------------------------------------------------------------------
+   ! Number of hourly records in current month.
+   !--------------------------------------------------------------------
+   nhours = 24 * daymo(curr_month)
+
+   !--------------------------------------------------------------------
+   ! Determine following month/year.
+   !--------------------------------------------------------------------
+   next_year  = curr_year
+   next_month = curr_month + 1
+
+   if (next_month > 12) then
+
+      next_month = 1
+      next_year  = curr_year + 1
+
+      if (ycycle > 0 .and. next_year > fyear_final) then
+         next_year = fyear_init
+      endif
+
+   endif
+
+   call whacs_monthly_wave_file( &
+        curr_year, curr_month, curr_file)
+
+   call whacs_monthly_wave_file( &
+        next_year, next_month, next_file)
+
+   !--------------------------------------------------------------------
+   ! Determine whether a new monthly cache must be loaded.
+   !--------------------------------------------------------------------
+   load_month = &
+        .not. allocated(wave_month_cache) .or. &
+        cache_year  /= curr_year .or. &
+        cache_month /= curr_month
+
+   !====================================================================
+   ! LOAD COMPLETE MONTH
+   !====================================================================
+   if (load_month) then
+
+      t_load_0 = wave_walltime()
+
+      !-----------------------------------------------------------------
+      ! Allocate/reallocate compact local monthly cache.
+      !
+      ! Only nblocks actually owned by this MPI task are retained.
+      ! This avoids allocating max_blocks worth of monthly storage on
+      ! every task.
+      !-----------------------------------------------------------------
+      if (allocated(wave_month_cache)) then
+         deallocate(wave_month_cache)
+      endif
+
+      allocate( &
+           wave_month_cache( &
+                nx_block, &
+                ny_block, &
+                nfreq, &
+                nhours+1, &
+                max(1_int_kind,nblocks)))
+
+      wave_month_cache = real(c0,kind=real_kind)
+
+      !-----------------------------------------------------------------
+      ! Allocate reusable distributed read buffer.
+      !-----------------------------------------------------------------
+      if (.not. allocated(wave_read_buffer)) then
+
+         allocate( &
+              wave_read_buffer( &
+                   nx_block, &
+                   ny_block, &
+                   nfreq, &
+                   max_blocks))
+
+      endif
+
+      wave_read_buffer = c0
+
+      if (my_task == master_task) then
+
+         write(nu_diag,*) &
+              subname//' loading complete WHACS month'
+
+         write(nu_diag,*) &
+              subname//' current file = ', &
+              trim(curr_file)
+
+         write(nu_diag,*) &
+              subname//' year/month   = ', &
+              curr_year, curr_month
+
+         write(nu_diag,*) &
+              subname//' hourly records = ', &
+              nhours
+
+         write(nu_diag,*) &
+              subname//' nfreq          = ', &
+              nfreq
+
+         call flush(nu_diag)
+
+      endif
+
+      !-----------------------------------------------------------------
+      ! Open current month's file ONCE.
+      !-----------------------------------------------------------------
+      call ice_open_nc(trim(curr_file),fid)
+
+      !-----------------------------------------------------------------
+      ! Read every hourly record in current month.
+      !
+      ! Each record is:
+      !
+      !       NetCDF global hyperslab
+      !             ↓
+      !       ice_read_nc_xyf
+      !             ↓
+      !       scatter_global
+      !             ↓
+      !       local wave_read_buffer
+      !             ↓
+      !       compact local monthly cache
+      !
+      !-----------------------------------------------------------------
+      do irec = 1, nhours
+
+         t_read_0 = wave_walltime()
+
+         call ice_read_nc_xyf( &
+              fid, &
+              irec, &
+              'efreq', &
+              wave_read_buffer(:,:,:,:), &
+              debug_forcing, &
+              field_loc=field_loc_center, &
+              field_type=field_type_scalar)
+
+         t_read_1 = wave_walltime()
+
+         !--------------------------------------------------------------
+         ! Retain only blocks actually owned by this MPI task.
+         !
+         ! Source data are float32, so converting the distributed read
+         ! buffer to real_kind does not discard meaningful source
+         ! precision.
+         !--------------------------------------------------------------
+         if (nblocks > 0) then
+
+            do iblk = 1, nblocks
+
+               wave_month_cache(:,:,:,irec,iblk) = &
+                    real( &
+                         wave_read_buffer(:,:,:,iblk), &
+                         kind=real_kind)
+
+            enddo
+
+         endif
+
+         !--------------------------------------------------------------
+         ! Lightweight loading progress on master task.
+         ! Print only every 24 records (one forcing day), plus endpoints.
+         !--------------------------------------------------------------
+         if (wave_io_debug .and. my_task == master_task) then
+
+            if (irec == 1 .or. &
+                mod(irec,24) == 0 .or. &
+                irec == nhours) then
+
+               write(nu_diag,*) &
+                    'WAVEIO MONTH LOAD record=',irec, &
+                    '/',nhours, &
+                    ' last_read_s=', &
+                    max(c0,t_read_1-t_read_0)
+
+               call flush(nu_diag)
+
+            endif
+
+         endif
+
+      enddo
+
+      !-----------------------------------------------------------------
+      ! Close current month's file after entire month has been cached.
+      !-----------------------------------------------------------------
+      call ice_close_nc(fid)
+
+      !-----------------------------------------------------------------
+      ! Read the first record of the following month.
+      !
+      ! Store this in nhours+1 so that interpolation during the final
+      ! hour of the current month remains entirely memory-resident.
+      !-----------------------------------------------------------------
+      wave_read_buffer = c0
+
+      call ice_open_nc(trim(next_file),fid)
+
+      t_read_0 = wave_walltime()
+
+      call ice_read_nc_xyf( &
+           fid, &
+           1, &
+           'efreq', &
+           wave_read_buffer(:,:,:,:), &
+           debug_forcing, &
+           field_loc=field_loc_center, &
+           field_type=field_type_scalar)
+
+      t_read_1 = wave_walltime()
+
+      call ice_close_nc(fid)
+
+      if (nblocks > 0) then
+
+         do iblk = 1, nblocks
+
+            wave_month_cache(:,:,:,nhours+1,iblk) = &
+                 real( &
+                      wave_read_buffer(:,:,:,iblk), &
+                      kind=real_kind)
+
+         enddo
+
+      endif
+
+      !-----------------------------------------------------------------
+      ! Update monthly cache identity.
+      !-----------------------------------------------------------------
+      cache_year   = curr_year
+      cache_month  = curr_month
+      cache_nhours = nhours
+
+      t_load_1 = wave_walltime()
+
+      if (my_task == master_task) then
+
+         write(nu_diag,*) &
+              subname//' next-month first record = ', &
+              trim(next_file)
+
+         write(nu_diag,*) &
+              'WAVEIO MONTH READY year=', &
+              cache_year, &
+              ' month=', &
+              cache_month, &
+              ' records=', &
+              cache_nhours+1, &
+              ' load_s=', &
+              max(c0,t_load_1-t_load_0)
+
+         call flush(nu_diag)
+
+      endif
+
+   endif ! load_month
+
+   !====================================================================
+   ! SELECT CURRENT HOURLY RECORD FROM MEMORY
+   !====================================================================
+
+   !--------------------------------------------------------------------
+   ! Current forcing-hour index.
+   !
+   !   day 1 00:00 -> record 1
+   !   day 1 01:00 -> record 2
+   !   ...
+   !--------------------------------------------------------------------
+   hour_index = int( &
+        real(msec,kind=dbl_kind) / sec1hr)
+
+   recnum = &
+        24 * (mday - 1) + &
+        hour_index + 1
+
+   recnum = &
+        max(1_int_kind, &
+        min(cache_nhours,recnum))
+
+   !--------------------------------------------------------------------
+   ! Fraction through current forcing hour.
+   !--------------------------------------------------------------------
+   frac = ( &
+        real(msec,kind=dbl_kind) - &
+        real(hour_index,kind=dbl_kind)*sec1hr) / sec1hr
+
+   frac = max(c0,min(c1,frac))
+
+   !====================================================================
+   ! INTERPOLATE ENTIRELY FROM MEMORY
+   !====================================================================
+   t_interp_0 = wave_walltime()
+
+   wave_spectrum = c0
+
+   if (nblocks > 0) then
+
+      do iblk = 1, nblocks
+
+         wave_spectrum(:,:,:,iblk) = &
+              (c1-frac) * &
+              real( &
+                   wave_month_cache(:,:,:,recnum,iblk), &
+                   kind=dbl_kind) + &
+              frac * &
+              real( &
+                   wave_month_cache(:,:,:,recnum+1,iblk), &
+                   kind=dbl_kind)
+
+      enddo
+
+   endif
+
+   where (wave_spectrum < c0)
+      wave_spectrum = c0
+   end where
+
+   t_interp_1 = wave_walltime()
+
+   t_total_1 = wave_walltime()
+
+   !--------------------------------------------------------------------
+   ! Ordinary timestep diagnostics.
+   !
+   ! No NetCDF access should occur here unless load_month = true.
+   !--------------------------------------------------------------------
+   if (wave_io_debug .and. my_task == master_task) then
+
+      write(nu_diag,*) &
+           'WAVEIO STEP istep=',istep, &
+           ' date=',myear,mmonth,mday, &
+           ' sec=',msec, &
+           ' rec=',recnum, &
+           ' frac=',frac, &
+           ' loaded_month=',load_month, &
+           ' interp_s=', &
+           max(c0,t_interp_1-t_interp_0), &
+           ' total_s=', &
+           max(c0,t_total_1-t_total_0)
+
+      call flush(nu_diag)
+
+   endif
+
+ end subroutine wave_spec_data_hourly
+
+ !=======================================================================
+ subroutine whacs_monthly_wave_file(year,month,filename)
+   !
+   ! Resolve YYYYMM token in wave_spec_file.
+   !
+   integer (kind=int_kind), intent(in) :: &
+        year, month
+
+   character(char_len_long), intent(out) :: &
+        filename
+
+   integer (kind=int_kind) :: &
+        ipos, &
+        ntemplate
+
+   character(len=6) :: &
+        yyyymm
+
+   character(char_len_long) :: &
+        template
+
+   character(len=*), parameter :: &
+        subname = '(whacs_monthly_wave_file)'
+
+   template  = trim(wave_spec_file)
+   ntemplate = len_trim(template)
+
+   ipos = index(template,'YYYYMM')
+
+   if (ipos <= 0) then
+
+      call abort_ice( &
+           subname//' ERROR: wave_spec_file lacks YYYYMM token', &
+           file=__FILE__, line=__LINE__)
+
+   endif
+
+   write(yyyymm,'(i4.4,i2.2)') year, month
+
+   filename = ' '
+
+   if (ipos > 1) then
+      filename = template(1:ipos-1)
+   endif
+
+   filename = trim(filename)//yyyymm
+
+   if (ipos+6 <= ntemplate) then
+      filename = trim(filename)//template(ipos+6:ntemplate)
+   endif
+
+ end subroutine whacs_monthly_wave_file
+
+ !=======================================================================
+ !=======================================================================
+ subroutine propagate_waves(spec)
+   !
+   ! Propagate waves from open water into ice-covered ocean cells.
+   !
+   ! Based on Noah Day's standalone CICE wave-forcing implementation.
+   ! Frequency-dependent attenuation follows Meylan, Bennetts & Kohout
+   ! (2014).
+   !
+   ! PERFORMANCE PROFILING
+   ! ---------------------
+   ! Timing is measured locally on each MPI task during propagation and
+   ! reduced only AFTER local propagation has completed.  This preserves
+   ! the existing propagation behaviour, including local early termination.
+   !
+   ! Diagnostics report:
+   !
+   !   - maximum mask time across all MPI tasks
+   !   - maximum total propagation time across all MPI tasks
+   !   - maximum time for each propagation pass across all MPI tasks
+   !   - global number of candidate and updated cells for each pass
+   !   - maximum number of passes executed by any MPI task
+   !
+   ! Detailed global reductions are restricted to the first two model
+   ! timesteps so that profiling itself does not materially affect a run.
+   !
+   use ice_grid, only: &
+        HTE, HTN, tlat, tmask
+
+   use ice_domain, only: &
+        nblocks, blocks_ice, distrb_info
+
+   use ice_blocks, only: &
+        block, get_block
+
+   use ice_arrays_column, only: &
+        dwavefreq, wavefreq
+
+   use ice_state, only: &
+        aice
+
+   use ice_global_reductions, only: &
+        global_maxval, global_sum
+
+   type (block) :: &
+        this_block
+
+   real(kind=dbl_kind), dimension(:,:,:,:), intent(inout) :: &
+        spec
+
+   real(kind=dbl_kind), dimension(nfreq) :: &
+        attenuation_rate
+
+   logical (kind=log_kind) :: &
+        new_cells_updated
+
+   real(kind=dbl_kind) :: &
+        delta_lat, &
+        max_delta_lat, &
+        local_sig_ht, &
+        neighbour_sig_ht, &
+        conc_obs
+
+   real(kind=dbl_kind) :: &
+        t_total_0, &
+        t_total_1, &
+        t_mask_0, &
+        t_mask_1, &
+        t_pass_0, &
+        t_pass_1, &
+        mask_time_local, &
+        mask_time_max, &
+        total_time_local, &
+        total_time_max
+
+   real(kind=dbl_kind), dimension(10) :: &
+        pass_time_local, &
+        pass_time_max
+
+   integer (kind=int_kind) :: &
+        i, j, &
+        idx_freq, &
+        pass, max_passes, &
+        iblk, &
+        ilo, ihi, jlo, jhi, &
+        best_in, best_jn, best_dir, &
+        i_n, j_n, idx_d
+
+   integer (kind=int_kind) :: &
+        n_candidate_local, &
+        n_updated_local, &
+        n_passes_local, &
+        n_passes_max
+
+   integer (kind=int_kind), dimension(10) :: &
+        candidate_local, &
+        candidate_global, &
+        updated_local, &
+        updated_global
+
+   integer, dimension(4) :: &
+        di = [0, 0, -1, 1], &
+        dj = [1, -1, 0, 0], &
+        dir_code_list = [1, 3, 4, 2]
+
+   logical (kind=log_kind) :: &
+        profile_detail
+
+   character(len=*), parameter :: &
+        subname = '(propagate_waves)'
+
+   !--------------------------------------------------------------------
+   ! Initialise performance diagnostics.
+   !
+   ! Do detailed reductions only for the first two model timesteps.
+   ! After that there is effectively no profiling overhead beyond the
+   ! local system_clock calls.
+   !--------------------------------------------------------------------
+   profile_detail = istep <= 2
+
+   pass_time_local = c0
+   pass_time_max   = c0
+
+   candidate_local  = 0_int_kind
+   candidate_global = 0_int_kind
+   updated_local    = 0_int_kind
+   updated_global   = 0_int_kind
+
+   n_passes_local = 0_int_kind
+
+   t_total_0 = wave_walltime()
+
+   !--------------------------------------------------------------------
+   ! Meylan et al. (2014) attenuation coefficients.
+   !--------------------------------------------------------------------
+   conc_obs = 0.70_dbl_kind
+
+   do idx_freq = 1, nfreq
+
+      attenuation_rate(idx_freq) = &
+           fn_Attn_MBK(wavefreq(idx_freq)) / conc_obs
+
+   enddo
+
+   ! Retain Noah Day's propagation depth for this diagnostic baseline.
+   max_passes = 10
+
+   !--------------------------------------------------------------------
+   ! Remove directly imposed WHACS energy from ice-covered cells.
+   !
+   ! WHACS remains prescribed in open-water ocean cells:
+   !
+   !       tmask = true
+   !       aice  < 0.15
+   !
+   ! Land and ice-covered cells begin propagation with zero wave energy.
+   !--------------------------------------------------------------------
+   t_mask_0 = wave_walltime()
+
+   do iblk = 1, nblocks
+
+      this_block = get_block(blocks_ice(iblk),iblk)
+
+      ilo = this_block%ilo
+      ihi = this_block%ihi
+      jlo = this_block%jlo
+      jhi = this_block%jhi
+
+      do j = jlo, jhi
+         do i = ilo, ihi
+
+            if (.not. tmask(i,j,iblk) .or. &
+                 aice(i,j,iblk) >= 0.15_dbl_kind) then
+
+               spec(i,j,:,iblk) = c0
+
+            endif
+
+         enddo
+      enddo
+
+   enddo
+
+   t_mask_1 = wave_walltime()
+
+   mask_time_local = &
+        max(c0,t_mask_1-t_mask_0)
+
+   !--------------------------------------------------------------------
+   ! Propagate from wave-bearing neighbours into ice-covered cells.
+   !
+   ! This section intentionally preserves the existing algorithm.
+   !--------------------------------------------------------------------
+   do pass = 1, max_passes
+
+      n_passes_local = pass
+
+      t_pass_0 = wave_walltime()
+
+      new_cells_updated = .false.
+
+      n_candidate_local = 0_int_kind
+      n_updated_local   = 0_int_kind
+
+      do iblk = 1, nblocks
+
+         this_block = get_block(blocks_ice(iblk),iblk)
+
+         ilo = this_block%ilo
+         ihi = this_block%ihi
+         jlo = this_block%jlo
+         jhi = this_block%jhi
+
+         do j = jlo, jhi
+            do i = ilo, ihi
+
+               !--------------------------------------------------------
+               ! Significant wave height in the target cell.
+               !
+               ! NOTE:
+               ! This 25-frequency reduction is one of the operations we
+               ! suspect may be expensive because it is repeated for every
+               ! cell, every pass, and again for neighbouring cells below.
+               !--------------------------------------------------------
+               local_sig_ht = c4 * sqrt( &
+                    sum(spec(i,j,:,iblk) * dwavefreq(:)))
+
+               !--------------------------------------------------------
+               ! Candidate ice-covered ocean cell with no meaningful
+               ! propagated wave field.
+               !--------------------------------------------------------
+               if (tmask(i,j,iblk) .and. &
+                   aice(i,j,iblk) >= 0.15_dbl_kind .and. &
+                   local_sig_ht <= p1) then
+
+                  n_candidate_local = &
+                       n_candidate_local + 1_int_kind
+
+                  max_delta_lat = -c1
+
+                  best_in  = i
+                  best_jn  = j
+                  best_dir = -1
+
+                  !-----------------------------------------------------
+                  ! Search four direct neighbours.
+                  !-----------------------------------------------------
+                  do idx_d = 1, 4
+
+                     i_n = i + di(idx_d)
+                     j_n = j + dj(idx_d)
+
+                     ! Bounds must be checked BEFORE inspecting neighbour
+                     ! arrays.
+                     if (i_n >= ilo .and. i_n <= ihi .and. &
+                         j_n >= jlo .and. j_n <= jhi) then
+
+                        neighbour_sig_ht = c4 * sqrt( &
+                             sum(spec(i_n,j_n,:,iblk) * &
+                             dwavefreq(:)))
+
+                        if (neighbour_sig_ht > p1) then
+
+                           delta_lat = abs( &
+                                tlat(i_n,j_n,iblk) - &
+                                tlat(i,j,iblk))
+
+                           if (delta_lat > max_delta_lat) then
+
+                              max_delta_lat = delta_lat
+
+                              best_in  = i_n
+                              best_jn  = j_n
+                              best_dir = dir_code_list(idx_d)
+
+                           endif
+
+                        endif
+
+                     endif
+
+                  enddo
+
+                  !-----------------------------------------------------
+                  ! Propagate from selected neighbouring source.
+                  !-----------------------------------------------------
+                  if (max_delta_lat > c0) then
+
+                     call increment_wave( &
+                          i, j, iblk, &
+                          best_in, best_jn, iblk, &
+                          aice(best_in,best_jn,iblk), &
+                          best_dir, &
+                          attenuation_rate, &
+                          spec)
+
+                     new_cells_updated = .true.
+
+                     n_updated_local = &
+                          n_updated_local + 1_int_kind
+
+                  endif
+
+               endif
+
+            enddo
+         enddo
+
+      enddo
+
+      t_pass_1 = wave_walltime()
+
+      pass_time_local(pass) = &
+           max(c0,t_pass_1-t_pass_0)
+
+      candidate_local(pass) = &
+           n_candidate_local
+
+      updated_local(pass) = &
+           n_updated_local
+
+      ! Preserve the present LOCAL early-exit behaviour.
+      !
+      ! Do not perform a collective reduction here: different MPI tasks
+      ! are currently allowed to execute different numbers of passes.
+      if (.not. new_cells_updated) exit
+
+   enddo
+
+   t_total_1 = wave_walltime()
+
+   total_time_local = &
+        max(c0,t_total_1-t_total_0)
+
+   !--------------------------------------------------------------------
+   ! GLOBAL PERFORMANCE DIAGNOSTICS
+   !
+   ! These reductions occur only AFTER every MPI task has completed its
+   ! own local propagation loop.  Therefore the diagnostic collectives do
+   ! not alter the propagation algorithm or force tasks to execute the
+   ! same number of propagation passes.
+   !--------------------------------------------------------------------
+   if (profile_detail) then
+
+      mask_time_max = &
+           global_maxval(mask_time_local,distrb_info)
+
+      total_time_max = &
+           global_maxval(total_time_local,distrb_info)
+
+      n_passes_max = &
+           global_maxval(n_passes_local,distrb_info)
+
+      do pass = 1, max_passes
+
+         pass_time_max(pass) = &
+              global_maxval( &
+                   pass_time_local(pass), &
+                   distrb_info)
+
+         candidate_global(pass) = &
+              global_sum( &
+                   candidate_local(pass), &
+                   distrb_info)
+
+         updated_global(pass) = &
+              global_sum( &
+                   updated_local(pass), &
+                   distrb_info)
+
+      enddo
+
+      if (my_task == master_task) then
+
+         write(nu_diag,*) &
+              'WAVEPERF GLOBAL istep=',istep, &
+              ' date=',myear,mmonth,mday, &
+              ' sec=',msec
+
+         write(nu_diag,*) &
+              'WAVEPERF GLOBAL mask_max_s=', &
+              mask_time_max, &
+              ' total_max_s=', &
+              total_time_max, &
+              ' max_passes=', &
+              n_passes_max
+
+         do pass = 1, max_passes
+
+            write(nu_diag,*) &
+                 'WAVEPERF GLOBAL PASS=',pass, &
+                 ' max_s=',pass_time_max(pass), &
+                 ' candidates=',candidate_global(pass), &
+                 ' updates=',updated_global(pass)
+
+         enddo
+
+         call flush(nu_diag)
+
+      endif
+
+   endif
+
+ end subroutine propagate_waves
+
+ !=======================================================================
+ subroutine increment_wave( &
+      i, j, iblk, &
+      src_i, src_j, src_iblk, &
+      conc, dir_code, &
+      attenuation_rate, wave_spectrum)
+   !
+   ! Propagate one frequency spectrum from a source cell into a neighbouring
+   ! ice-covered cell with exponential wave-ice attenuation.
+   !
+   use ice_grid, only: &
+        HTE, HTN
+
+   integer(kind=int_kind), intent(in) :: &
+        i, j, iblk, &
+        src_i, src_j, src_iblk, &
+        dir_code
+
+   real(kind=dbl_kind), intent(in) :: &
+        conc
+
+   real(kind=dbl_kind), dimension(:), intent(in) :: &
+        attenuation_rate
+
+   real(kind=dbl_kind), dimension(:,:,:,:), intent(inout) :: &
+        wave_spectrum
+
+   integer (kind=int_kind) :: &
+        idx_freq
+
+   real(kind=dbl_kind) :: &
+        exp_atten, &
+        dist
+
+   !--------------------------------------------------------------------
+   ! Distance between source and receiving cells.
+   !--------------------------------------------------------------------
+   if (i /= src_i .and. j /= src_j) then
+
+      dist = sqrt( &
+           HTE(src_i,src_j,src_iblk)**2 + &
+           HTN(i,j,iblk)**2)
+
+   elseif (i /= src_i) then
+
+      dist = HTE(src_i,src_j,src_iblk)
+
+   elseif (j /= src_j) then
+
+      dist = HTN(i,j,iblk)
+
+   else
+
+      dist = c0
+
+   endif
+
+   !--------------------------------------------------------------------
+   ! Frequency-dependent exponential attenuation.
+   !--------------------------------------------------------------------
+   do idx_freq = 1, nfreq
+
+      exp_atten = exp( &
+           -attenuation_rate(idx_freq) * dist * conc)
+
+      wave_spectrum(i,j,idx_freq,iblk) = &
+           wave_spectrum(src_i,src_j,idx_freq,src_iblk) * &
+           exp_atten
+
+   enddo
+
+ end subroutine increment_wave
+
+ !=======================================================================
+ real(kind=dbl_kind) function fn_Attn_MBK(dum_freq)
+   !
+   ! Wave-ice attenuation relation from:
+   !
+   ! Meylan, Bennetts & Kohout (2014), GRL
+   ! DOI: 10.1002/2014GL060809
+   !
+   ! Formulation follows Noah Day's CICE wave-forcing branch.
+   !
+   real(kind=dbl_kind), intent(in) :: &
+        dum_freq
+
+   real(kind=dbl_kind), parameter :: &
+        a = 2.12e-3_dbl_kind, &
+        b = 4.59e-2_dbl_kind
+
+   fn_Attn_MBK = &
+        a * dum_freq**2 + &
+        b * dum_freq**4
+
+ end function fn_Attn_MBK
+
+ !=======================================================================
 
  !=======================================================================
  subroutine init_snowtable
